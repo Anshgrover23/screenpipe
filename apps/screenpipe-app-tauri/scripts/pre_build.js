@@ -25,12 +25,18 @@ console.log('cwd', cwd)
 
 const config = {
 	ffmpegRealname: 'ffmpeg',
+	openblasRealname: 'openblas',
 	windows: {
 		ffmpegName: 'ffmpeg-8.0.1-full_build-shared',
 		ffmpegUrl: 'https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.0.1-full_build-shared.7z',
 		// Windows ARM64 (aarch64-pc-windows-msvc) — tordona/ffmpeg-win-arm64, full-shared for bin/ + lib/
 		ffmpegNameArm64: 'ffmpeg-master-latest-full-shared-win-arm64',
 		ffmpegUrlArm64: 'https://github.com/tordona/ffmpeg-win-arm64/releases/download/latest/ffmpeg-master-latest-full-shared-win-arm64.7z',
+		// OpenBLAS — OpenMathLib/OpenBLAS releases (x64 and woa64/arm64)
+		openblasName: 'OpenBLAS-0.3.31-x64',
+		openblasUrl: 'https://github.com/OpenMathLib/OpenBLAS/releases/download/v0.3.31/OpenBLAS-0.3.31-x64.zip',
+		openblasNameArm64: 'OpenBLAS-0.3.31-woa64-dll',
+		openblasUrlArm64: 'https://github.com/OpenMathLib/OpenBLAS/releases/download/v0.3.31/OpenBLAS-0.3.31-woa64-dll.zip',
 	},
 	linux: {
 		aptPackages: [
@@ -121,6 +127,7 @@ async function find7z() {
 // Export for Github actions
 const exports = {
 	ffmpeg: path.join(cwd, config.ffmpegRealname),
+	openBlas: path.join(cwd, config.openblasRealname),
 	libClang: 'C:\\Program Files\\LLVM\\bin',
 	cmake: 'C:\\Program Files\\CMake\\bin',
 }
@@ -496,6 +503,21 @@ if (platform == 'windows') {
 			} catch (err) {
 				console.warn('Skipping VC redist DLL copy (optional outside CI):', err.message);
 		}
+	}
+
+	// OpenBLAS: download from URL as openblasName.zip, extract into folder named openblas (same as ffmpeg).
+	if (!(await fs.exists(config.openblasRealname))) {
+		if (winArch === 'arm64') {
+			await $`${wgetPath} --no-config --tries=5 ${config.windows.openblasUrlArm64} -O ${config.windows.openblasNameArm64}.zip`;
+			await $`${sevenZ} x ${config.windows.openblasNameArm64}.zip -o${config.openblasRealname} -y`;
+			await fs.rm(path.join(cwd, `${config.windows.openblasNameArm64}.zip`), { force: true });
+		} else {
+			await $`${wgetPath} --no-config --tries=5 ${config.windows.openblasUrl} -O ${config.windows.openblasName}.zip`;
+			await $`${sevenZ} x ${config.windows.openblasName}.zip -o${config.openblasRealname} -y`;
+			await fs.rm(path.join(cwd, `${config.windows.openblasName}.zip`), { force: true });
+		}
+	} else {
+		console.log('OpenBLAS already exists');
 	}
 }
 
