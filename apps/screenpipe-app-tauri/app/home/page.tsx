@@ -263,20 +263,7 @@ function SettingsPageContent() {
     }
   }, [activeSection, setActiveSection]);
 
-  const renderMainSection = () => {
-    switch (activeSection) {
-      case "home":
-        return <StandaloneChat className="h-full" />;
-      case "timeline":
-        return <Timeline embedded />;
-      case "pipes":
-        return <PipeStoreView />;
-      case "help":
-        return <FeedbackSection />;
-      default:
-        return <StandaloneChat className="h-full" />;
-    }
-  };
+
 
   const renderModalSection = () => {
     switch (modalSection) {
@@ -650,14 +637,24 @@ function SettingsPageContent() {
 
           {/* Content */}
           <div className="flex-1 flex flex-col h-full bg-background min-h-0 rounded-tr-lg relative">
-            {isFullHeight ? (
+            {/* StandaloneChat — always mounted to preserve in-progress conversation */}
+            <div className={cn("flex-1 min-h-0 overflow-hidden", activeSection !== "home" && "hidden")}>
+              <StandaloneChat className="h-full" />
+            </div>
+
+            {/* Timeline — full height like chat */}
+            {activeSection === "timeline" && (
               <div className="flex-1 min-h-0 overflow-hidden">
-                {renderMainSection()}
+                <Timeline embedded />
               </div>
-            ) : (
+            )}
+
+            {/* Scrollable sections */}
+            {(activeSection === "pipes" || activeSection === "help") && (
               <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
                 <div className="p-6 pb-12 max-w-4xl mx-auto">
-                  {renderMainSection()}
+                  {activeSection === "pipes" && <PipeStoreView />}
+                  {activeSection === "help" && <FeedbackSection />}
                 </div>
               </div>
             )}
