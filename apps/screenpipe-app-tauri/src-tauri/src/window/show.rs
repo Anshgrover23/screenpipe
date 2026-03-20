@@ -45,8 +45,8 @@ impl FromStr for RewindWindowId {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "main" => Ok(RewindWindowId::Main),
-            "home" | "settings" => Ok(RewindWindowId::Home),
+            "overlay" => Ok(RewindWindowId::Main),
+            "main" | "settings" => Ok(RewindWindowId::Home),
             "search" => Ok(RewindWindowId::Search),
             "onboarding" => Ok(RewindWindowId::Onboarding),
             "chat" => Ok(RewindWindowId::Chat),
@@ -59,8 +59,8 @@ impl FromStr for RewindWindowId {
 impl std::fmt::Display for RewindWindowId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RewindWindowId::Main => write!(f, "main"),
-            RewindWindowId::Home => write!(f, "home"),
+            RewindWindowId::Main => write!(f, "overlay"),
+            RewindWindowId::Home => write!(f, "main"),
             RewindWindowId::Search => write!(f, "search"),
             RewindWindowId::Onboarding => write!(f, "onboarding"),
             RewindWindowId::Chat => write!(f, "chat"),
@@ -72,8 +72,8 @@ impl std::fmt::Display for RewindWindowId {
 impl RewindWindowId {
     pub fn label(&self) -> &str {
         match self {
-            RewindWindowId::Main => "main",
-            RewindWindowId::Home => "home",
+            RewindWindowId::Main => "overlay",
+            RewindWindowId::Home => "main",
             RewindWindowId::Search => "search",
             RewindWindowId::Onboarding => "onboarding",
             RewindWindowId::Chat => "chat",
@@ -370,9 +370,9 @@ impl ShowRewindWindow {
             #[cfg(target_os = "macos")]
             {
                 let other_label = if overlay_mode == "window" {
-                    "main"
+                    "overlay"
                 } else {
-                    "main-window"
+                    "overlay-window"
                 };
                 if app.get_webview_window(other_label).is_some() {
                     let app_clone = app.clone();
@@ -724,7 +724,7 @@ impl ShowRewindWindow {
                                     #[cfg(target_os = "macos")]
                                     {
                                         use objc::{msg_send, sel, sel_impl};
-                                        if let Ok(panel) = app_clone.get_webview_panel("main-window") {
+                                        if let Ok(panel) = app_clone.get_webview_panel("overlay-window") {
                                             unsafe {
                                                 let _: () = msg_send![&*panel, setAlphaValue: 0.0f64];
                                             }
@@ -752,7 +752,7 @@ impl ShowRewindWindow {
                                                 restore_frontmost_app_if_external_with_app(Some(&app2));
                                                 // order_out removes the invisible panel from
                                                 // the screen so it can't receive stray clicks.
-                                                if let Ok(panel) = app2.get_webview_panel("main-window") {
+                                                if let Ok(panel) = app2.get_webview_panel("overlay-window") {
                                                     panel.order_out(None);
                                                 }
                                             });
@@ -770,7 +770,7 @@ impl ShowRewindWindow {
                                     {
                                         use objc::{msg_send, sel, sel_impl};
                                         use tauri_nspanel::cocoa::base::id;
-                                        if let Ok(panel) = app_clone.get_webview_panel("main-window") {
+                                        if let Ok(panel) = app_clone.get_webview_panel("overlay-window") {
                                             unsafe {
                                                 let _: () = msg_send![&*panel, setAlphaValue: 1.0f64];
                                                 // Activate the app so keyboard events
@@ -1468,7 +1468,7 @@ impl ShowRewindWindow {
                 MAIN_PANEL_SHOWN.store(false, std::sync::atomic::Ordering::SeqCst);
                 let app_clone = app.clone();
                 run_on_main_thread_safe(app, move || {
-                    for label in &["main", "main-window"] {
+                    for label in &["overlay", "overlay-window"] {
                         if let Ok(panel) = app_clone.get_webview_panel(label) {
                             if panel.is_visible() {
                                 unsafe {
@@ -1486,7 +1486,7 @@ impl ShowRewindWindow {
 
             #[cfg(not(target_os = "macos"))]
             {
-                for label in &["main", "main-window"] {
+                for label in &["overlay", "overlay-window"] {
                     if let Some(window) = app.get_webview_window(label) {
                         window.hide().ok();
                     }
@@ -1501,7 +1501,7 @@ impl ShowRewindWindow {
         if id.label() == RewindWindowId::Main.label() {
             #[cfg(target_os = "macos")]
             {
-                // Hide whichever main panel is active (could be "main" or "main-window").
+                // Hide whichever overlay panel is active (could be "overlay" or "overlay-window").
                 //
                 // IMPORTANT: order_out MUST happen BEFORE restore_frontmost_app().
                 // Previously restore ran first (synchronous) while order_out was
@@ -1516,7 +1516,7 @@ impl ShowRewindWindow {
                 MAIN_PANEL_SHOWN.store(false, std::sync::atomic::Ordering::SeqCst);
                 let app_clone = app.clone();
                 run_on_main_thread_safe(app, move || {
-                    for label in &["main", "main-window"] {
+                    for label in &["overlay", "overlay-window"] {
                         if let Ok(panel) = app_clone.get_webview_panel(label) {
                             if panel.is_visible() {
                                 // Alpha=0 first for instant visual hide
@@ -1539,7 +1539,7 @@ impl ShowRewindWindow {
                 // Hide instead of close/destroy so the webview survives for reopen.
                 // Destroying the window causes a white screen when re-creating
                 // a webview with the same label.
-                for label in &["main", "main-window"] {
+                for label in &["overlay", "overlay-window"] {
                     if let Some(window) = app.get_webview_window(label) {
                         window.hide().ok();
                     }
@@ -1549,7 +1549,7 @@ impl ShowRewindWindow {
             {
                 // Hide overlay windows — the Home window is the persistent taskbar
                 // presence, so the overlay doesn't need to stay visible there.
-                for label in &["main", "main-window"] {
+                for label in &["overlay", "overlay-window"] {
                     if let Some(window) = app.get_webview_window(label) {
                         window.hide().ok();
                     }

@@ -691,7 +691,7 @@ async fn main() {
                 // clicks X. For other windows, minimize or hide.
                 #[cfg(target_os = "windows")]
                 {
-                    if window.label() == "home" {
+                    if window.label() == "main" {
                         // Minimize instead of closing so the Home window stays in the
                         // taskbar as the persistent app icon.
                         let _ = window.minimize();
@@ -1216,6 +1216,19 @@ async fn main() {
             } else {
                 let _ = ShowRewindWindow::Home { page: None }.show(&app.handle());
             }
+            #[cfg(debug_assertions)]
+            if onboarding_store.is_completed {
+                let app_handle_overlay = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    if app_handle_overlay.get_webview_window("overlay").is_none()
+                        && app_handle_overlay.get_webview_window("overlay-window").is_none()
+                    {
+                        info!("Dev mode: pre-opening overlay window for error visibility");
+                        let _ = ShowRewindWindow::Main.show(&app_handle_overlay);
+                    }
+                });
+            }
 
             // Pre-create chat panel (hidden) so the shortcut can show an
             // existing panel on fullscreen Spaces. New windows created in
@@ -1513,7 +1526,7 @@ async fn main() {
                         if woke && !was_asleep {
                             // System just woke — wait a moment for display to stabilize, then reload
                             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                            for label in &["main", "home", "chat"] {
+                            for label in &["overlay", "main", "chat"] {
                                 if let Some(window) = app_handle_wake.get_webview_window(label) {
                                     if let Err(e) = window.eval("window.location.reload()") {
                                         tracing::warn!("failed to reload webview '{}' after wake: {}", label, e);

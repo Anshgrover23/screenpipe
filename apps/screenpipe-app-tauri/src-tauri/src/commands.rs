@@ -257,7 +257,7 @@ pub fn hide_main_window(app_handle: &tauri::AppHandle) {
 pub fn enable_overlay_click_through(_app_handle: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        if let Some(window) = _app_handle.get_webview_window("main") {
+        if let Some(window) = _app_handle.get_webview_window("overlay") {
             crate::windows_overlay::enable_click_through(&window)?;
         }
     }
@@ -271,7 +271,7 @@ pub fn enable_overlay_click_through(_app_handle: tauri::AppHandle) -> Result<(),
 pub fn disable_overlay_click_through(_app_handle: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        if let Some(window) = _app_handle.get_webview_window("main") {
+        if let Some(window) = _app_handle.get_webview_window("overlay") {
             crate::windows_overlay::disable_click_through(&window)?;
         }
     }
@@ -284,7 +284,7 @@ pub fn disable_overlay_click_through(_app_handle: tauri::AppHandle) -> Result<()
 pub fn is_overlay_click_through(_app_handle: tauri::AppHandle) -> bool {
     #[cfg(target_os = "windows")]
     {
-        if let Some(window) = _app_handle.get_webview_window("main") {
+        if let Some(window) = _app_handle.get_webview_window("overlay") {
             return crate::windows_overlay::is_click_through_enabled(&window);
         }
     }
@@ -358,7 +358,7 @@ pub fn update_show_screenpipe_shortcut(
             }
             #[cfg(not(target_os = "macos"))]
             {
-                if let Some(window) = app_handle.get_webview_window("home") {
+                if let Some(window) = app_handle.get_webview_window("main") {
                     match window.is_visible() {
                         Ok(true) => hide_main_window(app_handle),
                         _ => show_main_window(app_handle, true),
@@ -640,7 +640,7 @@ pub async fn ensure_webview_focus(app_handle: tauri::AppHandle) -> Result<(), St
 
         let app = app_handle.clone();
         run_on_main_thread_safe(&app_handle, move || {
-            for label in &["main", "main-window"] {
+            for label in &["overlay", "overlay-window"] {
                 if let Ok(panel) = app.get_webview_panel(label) {
                     unsafe {
                         crate::window::make_webview_first_responder(&panel);
@@ -783,7 +783,7 @@ pub fn reset_main_window(app_handle: tauri::AppHandle) {
         use tauri_nspanel::ManagerExt;
         let app_clone = app_handle.clone();
         let _ = app_handle.run_on_main_thread(move || {
-            for label in &["main", "main-window"] {
+            for label in &["overlay", "overlay-window"] {
                 if let Ok(panel) = app_clone.get_webview_panel(label) {
                     panel.order_out(None);
                 }
@@ -794,7 +794,7 @@ pub fn reset_main_window(app_handle: tauri::AppHandle) {
 
     #[cfg(not(target_os = "macos"))]
     {
-        for label in &["main", "main-window"] {
+        for label in &["overlay", "overlay-window"] {
             if let Some(window) = app_handle.get_webview_window(label) {
                 let _ = window.destroy();
             }

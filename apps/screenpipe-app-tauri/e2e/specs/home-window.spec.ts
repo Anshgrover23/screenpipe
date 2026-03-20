@@ -33,7 +33,7 @@ describe('Home window', () => {
       .waitUntil(
         async () => {
           const h = await browser.getWindowHandles();
-          return h.find((x) => x === 'home') || false;
+          return h.find((x) => x === 'main') || false;
         },
         { timeout: 8000 }
       )

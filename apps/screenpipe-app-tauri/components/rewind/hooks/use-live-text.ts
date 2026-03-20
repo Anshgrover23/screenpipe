@@ -60,7 +60,7 @@ export function useLiveText(opts: {
 		};
 	};
 
-	const windowLabel = windowLabelProp ?? "main";
+	const windowLabel = windowLabelProp ?? "overlay";
 
 	// Re-initialize Live Text when window label changes (different window/panel)
 	const prevLabelRef = useRef(windowLabel);

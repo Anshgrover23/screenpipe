@@ -72,9 +72,9 @@ pub(crate) static MAIN_CREATED_MODE: Lazy<Mutex<String>> = Lazy::new(|| Mutex::n
 /// Returns the window label for the given overlay mode.
 pub fn main_label_for_mode(mode: &str) -> &'static str {
     if mode == "window" {
-        "main-window"
+        "overlay-window"
     } else {
-        "main"
+        "overlay"
     }
 }
 
