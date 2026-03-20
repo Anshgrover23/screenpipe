@@ -308,7 +308,7 @@ export function AppContextPopover({
 										title={u.url}
 										onClick={() => {
 											openUrl(u.url).catch(() => {});
-											commands.closeWindow("Main").catch(() => {});
+											commands.closeWindow("Overlay").catch(() => {});
 										}}
 									>
 										{domain ? (

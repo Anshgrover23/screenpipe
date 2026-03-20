@@ -429,7 +429,7 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 							if (isOutside) {
 								alreadyHidden = true;
 								pausePlayback();
-								commands.closeWindow("Main");
+								commands.closeWindow("Overlay");
 							}
 						} catch (e) {
 							// Ignore errors (window might be closing)
@@ -1100,7 +1100,7 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 									</p>
 
 									<button
-										onClick={() => commands.showWindow({ Home: { page: null } })}
+										onClick={() => commands.showWindow({ Main: { page: null } })}
 										className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-full text-sm font-medium hover:bg-primary/90 transition-colors"
 									>
 										<Settings className="w-4 h-4" />
@@ -1238,7 +1238,7 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 						{/* Close button - always visible to prevent being stuck (hidden in embedded mode) */}
 						{!embedded && (
 							<button
-								onClick={() => commands.closeWindow("Main")}
+								onClick={() => commands.closeWindow("Overlay")}
 								className="absolute top-4 right-4 p-2 bg-card hover:bg-muted border border-border rounded-md transition-colors z-50"
 								title="Close (Esc)"
 							>
@@ -1269,7 +1269,7 @@ export default function Timeline({ embedded = false }: { embedded?: boolean }) {
 						{/* Close button - always visible to prevent being stuck (hidden in embedded mode) */}
 						{!embedded && (
 							<button
-								onClick={() => commands.closeWindow("Main")}
+								onClick={() => commands.closeWindow("Overlay")}
 								className="absolute top-4 right-4 p-2 bg-card hover:bg-muted border border-border rounded-md transition-colors z-50"
 								title="Close (Esc)"
 							>

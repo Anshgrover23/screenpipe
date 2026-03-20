@@ -170,7 +170,7 @@ export function useTimelineKeyboard(opts: {
 				return;
 			}
 			pausePlayback();
-			commands.closeWindow("Main");
+			commands.closeWindow("Overlay");
 		});
 		return () => { unlisten.then((fn) => fn()); };
 	}, [showSearchModal, embedded, resetFilters, inSearchReviewMode, clearSearchHighlight]);

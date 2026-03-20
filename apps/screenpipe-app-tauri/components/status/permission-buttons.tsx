@@ -64,7 +64,7 @@ export const PermissionButtons: React.FC<PermissionButtonsProps> = ({
 
       // Hide the main window so user can see the system settings
       if (hideWindowOnClick) {
-        await commands.closeWindow("Main");
+        await commands.closeWindow("Overlay");
       }
 
       await commands.requestPermission(permissionType);
@@ -104,7 +104,7 @@ export const PermissionButtons: React.FC<PermissionButtonsProps> = ({
 
       // Hide the main window so user can see the system settings
       if (hideWindowOnClick) {
-        await commands.closeWindow("Main");
+        await commands.closeWindow("Overlay");
       }
 
       await commands.openPermissionSettings(permissionType);

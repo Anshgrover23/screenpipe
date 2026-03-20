@@ -314,7 +314,7 @@ export const TextOverlay = memo(function TextOverlay({
 		(url: string, e: React.MouseEvent) => {
 			e.preventDefault();
 			e.stopPropagation();
-			commands.closeWindow("Main").catch(() => {});
+			commands.closeWindow("Overlay").catch(() => {});
 			shellOpen(url).catch(() => {});
 		},
 		[]

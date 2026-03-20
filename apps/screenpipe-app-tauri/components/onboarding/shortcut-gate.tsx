@@ -130,7 +130,7 @@ export default function ShortcutGate() {
       console.error("failed to schedule notification:", e);
     }
     try {
-      await commands.showWindow("Main");
+      await commands.showWindow("Overlay");
       window.close();
     } catch {
       /* ignore */

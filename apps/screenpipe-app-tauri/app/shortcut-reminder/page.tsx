@@ -191,7 +191,7 @@ export default function ShortcutReminderPage() {
           <button
             onClick={(e) => {
               e.stopPropagation();
-              commands.showWindow("Main");
+              commands.showWindow("Overlay");
               posthog.capture("shortcut_reminder_timeline_clicked");
             }}
             onMouseDown={(e) => e.stopPropagation()}

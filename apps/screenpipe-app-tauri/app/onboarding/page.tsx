@@ -94,7 +94,7 @@ export default function OnboardingPage() {
   useEffect(() => {
     if (onboardingData.isCompleted) {
       commands
-        .showWindow("Main")
+        .showWindow("Overlay")
         .then(() => window.close())
         .catch(() => {});
     }

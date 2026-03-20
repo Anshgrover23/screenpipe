@@ -32,8 +32,8 @@ use tauri::Emitter;
 
 #[derive(PartialEq)]
 pub enum RewindWindowId {
+    Overlay,
     Main,
-    Home,
     Search,
     Onboarding,
     Chat,
@@ -45,13 +45,13 @@ impl FromStr for RewindWindowId {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "overlay" => Ok(RewindWindowId::Main),
-            "main" | "settings" => Ok(RewindWindowId::Home),
+            "overlay" => Ok(RewindWindowId::Overlay),
+            "main" | "settings" => Ok(RewindWindowId::Main),
             "search" => Ok(RewindWindowId::Search),
             "onboarding" => Ok(RewindWindowId::Onboarding),
             "chat" => Ok(RewindWindowId::Chat),
             "permission-recovery" => Ok(RewindWindowId::PermissionRecovery),
-            _ => Ok(RewindWindowId::Main),
+            _ => Ok(RewindWindowId::Overlay),
         }
     }
 }
@@ -59,8 +59,8 @@ impl FromStr for RewindWindowId {
 impl std::fmt::Display for RewindWindowId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RewindWindowId::Main => write!(f, "overlay"),
-            RewindWindowId::Home => write!(f, "main"),
+            RewindWindowId::Overlay => write!(f, "overlay"),
+            RewindWindowId::Main => write!(f, "main"),
             RewindWindowId::Search => write!(f, "search"),
             RewindWindowId::Onboarding => write!(f, "onboarding"),
             RewindWindowId::Chat => write!(f, "chat"),
@@ -72,8 +72,8 @@ impl std::fmt::Display for RewindWindowId {
 impl RewindWindowId {
     pub fn label(&self) -> &str {
         match self {
-            RewindWindowId::Main => "overlay",
-            RewindWindowId::Home => "main",
+            RewindWindowId::Overlay => "overlay",
+            RewindWindowId::Main => "main",
             RewindWindowId::Search => "search",
             RewindWindowId::Onboarding => "onboarding",
             RewindWindowId::Chat => "chat",
@@ -83,8 +83,8 @@ impl RewindWindowId {
 
     pub fn title(&self) -> &str {
         match self {
+            RewindWindowId::Overlay => "screenpipe",
             RewindWindowId::Main => "screenpipe",
-            RewindWindowId::Home => "screenpipe",
             RewindWindowId::Search => "search",
             RewindWindowId::Onboarding => "onboarding",
             RewindWindowId::Chat => "ai chat",
@@ -94,8 +94,8 @@ impl RewindWindowId {
 
     pub fn min_size(&self) -> Option<(f64, f64)> {
         Some(match self {
+            RewindWindowId::Overlay => (800.0, 600.0),
             RewindWindowId::Main => (800.0, 600.0),
-            RewindWindowId::Home => (800.0, 600.0),
             RewindWindowId::Search => (400.0, 56.0),
             RewindWindowId::Onboarding => (450.0, 500.0),
             RewindWindowId::Chat => (600.0, 750.0),
@@ -111,8 +111,8 @@ impl RewindWindowId {
 
 #[derive(Serialize, Deserialize, Debug, Clone, specta::Type)]
 pub enum ShowRewindWindow {
-    Main,
-    Home { page: Option<String> },
+    Overlay,
+    Main { page: Option<String> },
     Search { query: Option<String> },
     Onboarding,
     Chat,
@@ -183,8 +183,8 @@ impl ShowRewindWindow {
 
     pub fn id(&self) -> RewindWindowId {
         match self {
-            ShowRewindWindow::Main => RewindWindowId::Main,
-            ShowRewindWindow::Home { page: _ } => RewindWindowId::Home,
+            ShowRewindWindow::Overlay => RewindWindowId::Overlay,
+            ShowRewindWindow::Main { page: _ } => RewindWindowId::Main,
             ShowRewindWindow::Search { query: _ } => RewindWindowId::Search,
             ShowRewindWindow::Onboarding => RewindWindowId::Onboarding,
             ShowRewindWindow::Chat => RewindWindowId::Chat,
@@ -194,8 +194,8 @@ impl ShowRewindWindow {
 
     pub fn metadata(&self) -> Option<String> {
         match self {
-            ShowRewindWindow::Main => None,
-            ShowRewindWindow::Home { page: _ } => None,
+            ShowRewindWindow::Overlay => None,
+            ShowRewindWindow::Main { page: _ } => None,
             ShowRewindWindow::Search { query } => {
                 Some(query.clone().unwrap_or_default().to_string())
             }
@@ -359,7 +359,7 @@ impl ShowRewindWindow {
             .unwrap_or_default();
 
         // === Main window: use mode-specific labels to avoid NSPanel reconfiguration ===
-        if id.label() == RewindWindowId::Main.label() {
+        if id.label() == RewindWindowId::Overlay.label() {
             let overlay_mode = SettingsStore::get(app)
                 .unwrap_or_default()
                 .unwrap_or_default()
@@ -396,7 +396,7 @@ impl ShowRewindWindow {
         } else if let Some(window) = id.get(app) {
             if id.label() == RewindWindowId::Onboarding.label() {
                 if onboarding_store.is_completed {
-                    return ShowRewindWindow::Main.show(app);
+                    return ShowRewindWindow::Overlay.show(app);
                 }
             }
 
@@ -453,8 +453,8 @@ impl ShowRewindWindow {
 
             // Settings window: navigate to the requested section if specified
             // and ensure it comes to front (macOS set_focus alone is unreliable from tray context)
-            if id.label() == RewindWindowId::Home.label() {
-                if let ShowRewindWindow::Home {
+            if id.label() == RewindWindowId::Main.label() {
+                if let ShowRewindWindow::Main {
                     page: Some(ref section),
                 } = self
                 {
@@ -593,7 +593,7 @@ impl ShowRewindWindow {
         debug!("showing window: {:?} (not found)", id.label());
 
         let window = match self {
-            ShowRewindWindow::Main => {
+            ShowRewindWindow::Overlay => {
                 if !onboarding_store.is_completed {
                     return ShowRewindWindow::Onboarding.show(app);
                 }
@@ -1162,7 +1162,7 @@ impl ShowRewindWindow {
 
                 window
             }
-            ShowRewindWindow::Home { page } => {
+            ShowRewindWindow::Main { page } => {
                 let url = match page {
                     Some(p) => format!("/home?section={}", p),
                     None => "/home".to_string(),
@@ -1289,7 +1289,7 @@ impl ShowRewindWindow {
             }
             ShowRewindWindow::Onboarding => {
                 if onboarding_store.is_completed {
-                    return ShowRewindWindow::Main.show(app);
+                    return ShowRewindWindow::Overlay.show(app);
                 }
 
                 // Clamp onboarding window size to primary monitor to prevent min > max panic
@@ -1462,7 +1462,7 @@ impl ShowRewindWindow {
     /// so that focus stays with the app instead of bouncing to the previous app.
     pub fn hide_without_restore(&self, app: &AppHandle) -> tauri::Result<()> {
         let id = self.id();
-        if id.label() == RewindWindowId::Main.label() {
+        if id.label() == RewindWindowId::Overlay.label() {
             #[cfg(target_os = "macos")]
             {
                 MAIN_PANEL_SHOWN.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1498,7 +1498,7 @@ impl ShowRewindWindow {
 
     pub fn close(&self, app: &AppHandle) -> tauri::Result<()> {
         let id = self.id();
-        if id.label() == RewindWindowId::Main.label() {
+        if id.label() == RewindWindowId::Overlay.label() {
             #[cfg(target_os = "macos")]
             {
                 // Hide whichever overlay panel is active (could be "overlay" or "overlay-window").
@@ -1570,7 +1570,7 @@ impl ShowRewindWindow {
             // On Windows, minimize the Settings window instead of closing it
             // so it stays in the taskbar and can be restored quickly.
             #[cfg(target_os = "windows")]
-            if id.label() == RewindWindowId::Home.label() {
+            if id.label() == RewindWindowId::Main.label() {
                 window.minimize().ok();
                 return Ok(());
             }

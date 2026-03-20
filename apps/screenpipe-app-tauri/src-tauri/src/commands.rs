@@ -33,7 +33,7 @@ extern "C" fn native_notif_action_callback(json_ptr: *const std::os::raw::c_char
                 // Show the home window (needs main thread on macOS)
                 let app_for_show = app_clone.clone();
                 let _ = app_clone.run_on_main_thread(move || {
-                    if let Err(e) = (ShowRewindWindow::Home { page: None }).show(&app_for_show) {
+                    if let Err(e) = (ShowRewindWindow::Main { page: None }).show(&app_for_show) {
                         error!("failed to show home window for manage: {}", e);
                     }
                 });
@@ -65,7 +65,7 @@ extern "C" fn native_shortcut_action_callback(action_ptr: *const std::os::raw::c
             match action.as_str() {
                 "open_timeline" => {
                     let _ = app_clone.run_on_main_thread(move || {
-                        let _ = ShowRewindWindow::Main.show(&app_for_show);
+                        let _ = ShowRewindWindow::Overlay.show(&app_for_show);
                     });
                 }
                 "open_chat" => {
@@ -204,7 +204,7 @@ pub fn set_tray_health_icon(app_handle: tauri::AppHandle) {
 #[specta::specta]
 pub fn show_main_window(app_handle: &tauri::AppHandle, _overlay: bool) {
     info!("show_main_window called");
-    let window_to_show = ShowRewindWindow::Main;
+    let window_to_show = ShowRewindWindow::Overlay;
 
     match window_to_show.show(app_handle) {
         Ok(window) => {
@@ -231,7 +231,7 @@ pub fn show_main_window(app_handle: &tauri::AppHandle, _overlay: bool) {
             // RegisterEventHotKey calls that fail on macOS.
         }
         Err(e) => {
-            error!("ShowRewindWindow::Main.show failed: {}", e);
+            error!("ShowRewindWindow::Overlay.show failed: {}", e);
         }
     }
 }
@@ -243,7 +243,7 @@ pub fn hide_main_window(app_handle: &tauri::AppHandle) {
     // handler in window/show.rs. Do NOT also unregister them here — doing
     // so races with the focus handler and causes duplicate unregister calls.
 
-    let window_to_close = ShowRewindWindow::Main;
+    let window_to_close = ShowRewindWindow::Overlay;
 
     if let Err(e) = window_to_close.close(app_handle) {
         error!("failed to close window: {}", e);
@@ -609,11 +609,11 @@ pub async fn show_window(
     // Close Main window when opening other windows, EXCEPT for Chat and Search
     // Chat overlays on top of Main (level 1002 vs 1001)
     let window_id = window.id();
-    if !matches!(window_id, RewindWindowId::Main | RewindWindowId::Chat | RewindWindowId::Search) {
+    if !matches!(window_id, RewindWindowId::Overlay | RewindWindowId::Chat | RewindWindowId::Search) {
         // Hide Main without restoring the previous frontmost app — we're
         // transitioning to another screenpipe window so focus should stay
         // with us, not bounce to the previous app.
-        ShowRewindWindow::Main
+        ShowRewindWindow::Overlay
             .hide_without_restore(&app_handle)
             .map_err(|e| e.to_string())?;
     }
@@ -667,7 +667,7 @@ pub async fn search_navigate_to_timeline(
     search_query: Option<String>,
 ) -> Result<(), String> {
     // Show the Main timeline
-    ShowRewindWindow::Main.show(&app_handle).map_err(|e| e.to_string())?;
+    ShowRewindWindow::Overlay.show(&app_handle).map_err(|e| e.to_string())?;
 
     // Emit the navigation event multiple times — the Main webview may take
     // varying time to restore from order_out and mount the event listener.
@@ -759,7 +759,7 @@ pub async fn close_window(
 
     // If closing the main window, also unregister window-specific shortcuts
     // (Escape, search shortcut) so they don't interfere with other apps
-    if matches!(window, ShowRewindWindow::Main) {
+    if matches!(window, ShowRewindWindow::Overlay) {
         let app_clone = app_handle.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -840,7 +840,7 @@ pub async fn complete_onboarding(app_handle: tauri::AppHandle) -> Result<(), Str
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     close_window(app_handle.clone(), ShowRewindWindow::Onboarding).await?;
-    show_window(app_handle.clone(), ShowRewindWindow::Main).await?;
+    show_window(app_handle.clone(), ShowRewindWindow::Overlay).await?;
 
     Ok(())
 }
@@ -903,7 +903,7 @@ pub async fn open_search_window(
     app_handle: tauri::AppHandle,
     query: Option<String>,
 ) -> Result<(), String> {
-    ShowRewindWindow::Main
+    ShowRewindWindow::Overlay
         .close(&app_handle)
         .map_err(|e| e.to_string())?;
     ShowRewindWindow::Search { query }

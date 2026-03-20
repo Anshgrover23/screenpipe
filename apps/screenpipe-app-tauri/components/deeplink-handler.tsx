@@ -119,7 +119,7 @@ export function DeeplinkHandler() {
             if (!isNaN(date.getTime())) {
               // Write to store (persists across mounts) AND emit event (instant if timeline is mounted)
               setPendingNavigation({ timestamp });
-              await commands.showWindow("Main");
+              await commands.showWindow("Overlay");
               await emit("navigate-to-timestamp", timestamp);
               toast({
                 title: "navigating to timestamp",
@@ -157,7 +157,7 @@ export function DeeplinkHandler() {
           try {
             // Store frame navigation — timeline will resolve frame → timestamp
             setPendingNavigation({ timestamp: "", frameId });
-            await commands.showWindow("Main");
+            await commands.showWindow("Overlay");
             await emit("navigate-to-frame", frameId);
             toast({
               title: "navigating to frame",

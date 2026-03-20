@@ -153,7 +153,7 @@ export default function NotificationPanelPage() {
 
         // Legacy string-based action handlers
         if (actionStr === "open_timeline") {
-          await invoke("show_window", { window: "Main" });
+          await invoke("show_window", { window: "Overlay" });
         } else if (actionStr === "open_chat") {
           await invoke("show_window", { window: "Chat" });
         } else if (actionStr === "open_pipe_suggestions") {
@@ -575,7 +575,7 @@ export default function NotificationPanelPage() {
             onClick={async () => {
               await hide(false);
               await emit("navigate", { url: "/home?section=notifications" });
-              try { await invoke("show_window", { window: { Home: { page: null } } }); } catch {}
+              try { await invoke("show_window", { window: { Main: { page: null } } }); } catch {}
             }}
             style={{
               fontSize: "9px",

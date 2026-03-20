@@ -551,7 +551,7 @@ function MarkdownBlock({ text, isUser }: { text: string; isUser: boolean }) {
                   const frameId = href.split("frame/")[1]?.replace(/^\//, "");
                   if (frameId) {
                     useTimelineStore.getState().setPendingNavigation({ timestamp: "", frameId });
-                    await commands.showWindow("Main");
+                    await commands.showWindow("Overlay");
                     await emit("navigate-to-frame", frameId);
                   }
                   return;
@@ -562,7 +562,7 @@ function MarkdownBlock({ text, isUser }: { text: string; isUser: boolean }) {
                   const date = new Date(timestamp);
                   if (!isNaN(date.getTime())) {
                     useTimelineStore.getState().setPendingNavigation({ timestamp });
-                    await commands.showWindow("Main");
+                    await commands.showWindow("Overlay");
                     await emit("navigate-to-timestamp", timestamp);
                   }
                 }
@@ -3070,7 +3070,7 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
               <Button
                 variant="outline"
                 onClick={async () => {
-                  await commands.showWindow({ Home: { page: null } });
+                  await commands.showWindow({ Main: { page: null } });
                 }}
                 className="gap-2"
               >

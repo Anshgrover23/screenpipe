@@ -1218,7 +1218,7 @@ export const AIPresetsSelector = ({
                 size="sm"
                 className="shrink-0 h-7 text-xs border-amber-500/30 hover:bg-amber-500/10"
                 onClick={async () => {
-                  await commands.showWindow({ Home: { page: "account" } });
+                  await commands.showWindow({ Main: { page: "account" } });
                 }}
               >
                 <LogIn className="h-3 w-3 mr-1" />

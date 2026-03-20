@@ -1202,7 +1202,7 @@ chatAlwaysOnTop?: boolean;
  * Disabled by default for now until the stall detector is more reliable.
  */
 showRestartNotifications?: boolean }
-export type ShowRewindWindow = "Main" | { Home: { page: string | null } } | { Search: { query: string | null } } | "Onboarding" | "Chat" | "PermissionRecovery"
+export type ShowRewindWindow = "Overlay" | { Main: { page: string | null } } | { Search: { query: string | null } } | "Onboarding" | "Chat" | "PermissionRecovery"
 export type Suggestion = { text: string }
 /**
  * Sync configuration.

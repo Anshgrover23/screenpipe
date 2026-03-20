@@ -954,7 +954,7 @@ async fn main() {
                             // Defer off event stack (same as tray: runs from tao::send_event).
                             let app_for_closure = app_handle.clone();
                             let _ = app_handle.run_on_main_thread(move || {
-                                let _ = ShowRewindWindow::Home { page: None }.show(&app_for_closure);
+                                let _ = ShowRewindWindow::Main { page: None }.show(&app_for_closure);
                             });
                         }
                         "check_for_updates" => {
@@ -1214,7 +1214,7 @@ async fn main() {
             if !onboarding_store.is_completed {
                 let _ = ShowRewindWindow::Onboarding.show(&app.handle());
             } else {
-                let _ = ShowRewindWindow::Home { page: None }.show(&app.handle());
+                let _ = ShowRewindWindow::Main { page: None }.show(&app.handle());
             }
             #[cfg(debug_assertions)]
             if onboarding_store.is_completed {
@@ -1225,7 +1225,7 @@ async fn main() {
                         && app_handle_overlay.get_webview_window("overlay-window").is_none()
                     {
                         info!("Dev mode: pre-opening overlay window for error visibility");
-                        let _ = ShowRewindWindow::Main.show(&app_handle_overlay);
+                        let _ = ShowRewindWindow::Overlay.show(&app_handle_overlay);
                     }
                 });
             }
@@ -1726,12 +1726,12 @@ async fn main() {
                 } => {
                     if let Ok(window_id) = RewindWindowId::from_str(label.as_str()) {
                         match window_id {
-                            RewindWindowId::Home => {
+                            RewindWindowId::Main => {
                                 // Closing Settings hides the Main panel (it's always a panel now).
                                 // Defer off the event stack: run handler must stay panic-free.
                                 let app = app_handle.app_handle().clone();
                                 let _ = app_handle.app_handle().run_on_main_thread(move || {
-                                    let _ = ShowRewindWindow::Main.close(&app);
+                                    let _ = ShowRewindWindow::Overlay.close(&app);
                                 });
                             }
                             _ => {}
@@ -1745,7 +1745,7 @@ async fn main() {
                     // Open the settings/app window (not the timeline overlay).
                     let app = app_handle.app_handle().clone();
                     let _ = app_handle.app_handle().run_on_main_thread(move || {
-                        let _ = ShowRewindWindow::Home { page: None }.show(&app);
+                        let _ = ShowRewindWindow::Main { page: None }.show(&app);
                     });
                 }
                 _ => {}

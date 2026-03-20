@@ -144,7 +144,7 @@ export default function Home() {
     // add a shortcut to hide main window when pressed esc
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        commands.closeWindow("Main");
+        commands.closeWindow("Overlay");
       }
     };
 
@@ -482,7 +482,7 @@ export default function Home() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => commands.closeWindow("Main")}
+                    onClick={() => commands.closeWindow("Overlay")}
                     className="text-muted-foreground"
                   >
                     <X className="h-4 w-4 mr-1.5" />

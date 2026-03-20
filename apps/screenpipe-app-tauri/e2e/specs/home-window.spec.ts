@@ -20,7 +20,7 @@ describe('Home window', () => {
   });
 
   it('opens Home and clicks through Home, Pipes, Timeline, Help, Settings', async () => {
-    const windowPayload = { Home: { page: null } };
+    const windowPayload = { Main: { page: null } };
     await browser.execute(async (payload) => {
       const inv =
         (globalThis as unknown as { __TAURI__?: { core?: { invoke: (cmd: string, args: object) => Promise<unknown> } }; __TAURI_INTERNALS__?: { invoke: (cmd: string, args: object) => Promise<unknown> } }).__TAURI__?.core?.invoke ??

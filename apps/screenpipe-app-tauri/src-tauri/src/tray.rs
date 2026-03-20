@@ -493,7 +493,7 @@ fn setup_tray_click_handlers(main_tray: &TrayIcon) -> Result<()> {
                     tauri::async_runtime::spawn(async move {
                         let app_inner = app.clone();
                         let _ = app.run_on_main_thread(move || {
-                            let _ = ShowRewindWindow::Home { page: None }.show(&app_inner);
+                            let _ = ShowRewindWindow::Main { page: None }.show(&app_inner);
                         });
                     });
                 }
@@ -558,7 +558,7 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
         "upgrade" => {
             let app = app_handle.clone();
             let _ = app_handle.run_on_main_thread(move || {
-                let _ = ShowRewindWindow::Home {
+                let _ = ShowRewindWindow::Main {
                     page: Some("account".to_string()),
                 }
                 .show(&app);
@@ -617,14 +617,14 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
         "settings" | "settings_top" => {
             let app = app_handle.clone();
             let _ = app_handle.run_on_main_thread(move || {
-                let _ = ShowRewindWindow::Home { page: None }.show(&app);
+                let _ = ShowRewindWindow::Main { page: None }.show(&app);
             });
         }
         "feedback" => {
             let app = app_handle.clone();
             let page = Some("help".to_string());
             let _ = app_handle.run_on_main_thread(move || {
-                let _ = ShowRewindWindow::Home { page }.show(&app);
+                let _ = ShowRewindWindow::Main { page }.show(&app);
             });
         }
         "book_call" => {

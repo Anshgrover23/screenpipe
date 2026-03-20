@@ -178,7 +178,7 @@ export function ChatMessage({ message, ...props }: ChatMessageProps) {
 											const frameId = href.split("frame/")[1]?.replace(/^\//, "");
 											if (frameId) {
 												setPendingNavigation({ timestamp: "", frameId });
-												await commands.showWindow("Main");
+												await commands.showWindow("Overlay");
 												await emit("navigate-to-frame", frameId);
 											}
 											return;
@@ -189,7 +189,7 @@ export function ChatMessage({ message, ...props }: ChatMessageProps) {
 											const date = new Date(timestamp);
 											if (!isNaN(date.getTime())) {
 												setPendingNavigation({ timestamp });
-												await commands.showWindow("Main");
+												await commands.showWindow("Overlay");
 												await emit("navigate-to-timestamp", timestamp);
 												toast({
 													title: "navigating to timestamp",

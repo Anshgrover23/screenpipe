@@ -120,7 +120,7 @@ const NotificationHandler: React.FC = () => {
           const { invoke } = await import("@tauri-apps/api/core");
           // Show window first, then navigate after a brief delay so the
           // home window's listener is mounted and ready to receive the event
-          try { await invoke("show_window", { window: { Home: { page: null } } }); } catch {}
+          try { await invoke("show_window", { window: { Main: { page: null } } }); } catch {}
           await new Promise((r) => setTimeout(r, 300));
           await emit("navigate", { url: "/home?section=notifications" });
           return;
@@ -185,7 +185,7 @@ const NotificationHandler: React.FC = () => {
         // Legacy string actions
         const { invoke } = await import("@tauri-apps/api/core");
         if (action.action === "open_timeline") {
-          await invoke("show_window", { window: "Main" });
+          await invoke("show_window", { window: "Overlay" });
         } else if (action.action === "open_chat") {
           await invoke("show_window", { window: "Chat" });
         } else if (action.action === "open_pipe_suggestions") {
