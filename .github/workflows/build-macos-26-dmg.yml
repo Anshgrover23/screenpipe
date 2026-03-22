@@ -95,7 +95,7 @@ jobs:
           bun tauri build \
             --features metal,official-build,apple-intelligence \
             --no-sign \
-            --bundle dmg
+            --bundles dmg
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
