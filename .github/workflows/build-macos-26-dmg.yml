@@ -42,12 +42,6 @@ jobs:
         with:
           workspaces: apps/screenpipe-app-tauri/src-tauri
           shared-key: screenpipe-tauri-macos-26-dmg
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          brew install ffmpeg wget
-
       - name: Install frontend dependencies
         working-directory: apps/screenpipe-app-tauri
         shell: bash
