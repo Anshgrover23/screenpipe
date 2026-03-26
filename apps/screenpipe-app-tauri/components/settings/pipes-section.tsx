@@ -29,6 +29,7 @@ import {
   Upload,
   ArrowUpCircle,
   MessageSquare,
+  AlertCircle,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -61,13 +62,13 @@ import { useSettings } from "@/lib/hooks/use-settings";
 import { AIPresetsSelector } from "@/components/rewind/ai-presets-selector";
 import { useTeam } from "@/lib/hooks/use-team";
 import { useToast } from "@/components/ui/use-toast";
-import { ToastAction } from "@/components/ui/toast";
 import { useQueryState } from "nuqs";
 import { HelpTooltip } from "@/components/ui/help-tooltip";
 import { pipeExecutionToConversation } from "@/lib/pipe-ndjson-to-chat";
 import { saveConversationFile } from "@/lib/chat-storage";
 import { UpgradeDialog } from "@/components/upgrade-dialog";
 import { PublishDialog } from "@/components/pipe-store";
+import { PostInstallConnectionsModal } from "@/components/post-install-connections-modal";
 import posthog from "posthog-js";
 
 const PIPE_CREATION_PROMPT = `create a screenpipe pipe that does the following.
@@ -680,6 +681,7 @@ export function PipesSection() {
   const [searchQuery, setSearchQuery] = useState("");
   const [pipeTypeFilter, setPipeTypeFilter] = useState<"scheduled" | "manual">("scheduled");
   const [availableConnections, setAvailableConnections] = useState<AvailableConnection[]>([]);
+  const [connectionModal, setConnectionModal] = useState<{ pipeName: string; connections: string[] } | null>(null);
   const [availableUpdates, setAvailableUpdates] = useState<Record<string, { latest_version: number; installed_version: number; locally_modified: boolean }>>({});
   const [updatingPipe, setUpdatingPipe] = useState<string | null>(null);
   // Live streaming output for running executions: key = "pipeName:executionId"
@@ -889,6 +891,15 @@ export function PipesSection() {
     }
   };
 
+  const disablePipe = async (name: string) => {
+    await fetch(`http://localhost:3030/pipes/${name}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    fetchPipes();
+  };
+
   const trackedPipesView = useRef(false);
   useEffect(() => {
     fetchConnections();
@@ -907,6 +918,24 @@ export function PipesSection() {
           return current;
         });
       }
+      // Auto-open connection modal for newly installed pipes that have missing connections
+      setPipes((current) => {
+        for (const pipe of current) {
+          const key = `justInstalled:${pipe.config.name}`;
+          if (typeof window !== "undefined" && sessionStorage.getItem(key)) {
+            sessionStorage.removeItem(key);
+            const required: string[] = pipe.config.connections ?? [];
+            if (required.length > 0) {
+              // Defer state update outside render cycle
+              setTimeout(() => {
+                setConnectionModal({ pipeName: pipe.config.name, connections: required });
+              }, 0);
+            }
+            break;
+          }
+        }
+        return current;
+      });
     });
     const interval = setInterval(fetchPipes, 10000);
     return () => clearInterval(interval);
@@ -1047,23 +1076,7 @@ export function PipesSection() {
           return !conn || !conn.connected;
         });
         if (missing.length > 0) {
-          const firstName = missing[0];
-          toast({
-            title: "connection required",
-            description: `this pipe needs ${missing.join(", ")} to be configured`,
-            variant: "destructive",
-            action: (
-              <ToastAction
-                altText="set up connection"
-                onClick={() => {
-                  sessionStorage.setItem("openConnection", firstName);
-                  setSection("connections");
-                }}
-              >
-                set up
-              </ToastAction>
-            ),
-          });
+          setConnectionModal({ pipeName: name, connections: requiredConnections });
           setRunningPipe(null);
           return;
         }
@@ -1434,6 +1447,10 @@ export function PipesSection() {
             const isRunning = pipe.is_running || runningPipe === pipe.config.name;
             const runningExec = recentExecs.find((e) => e.status === "running");
             const lastExec = recentExecs[0];
+            const hasMissingConnections = (pipe.config.connections ?? []).some((id) => {
+              const conn = availableConnections.find((c) => c.id === id);
+              return !conn || !conn.connected;
+            });
             const lastStatus = isRunning
               ? "running"
               : pipe.last_success === false
@@ -1495,6 +1512,20 @@ export function PipesSection() {
                   </Badge>
                 )}
 
+                {/* Missing connections badge */}
+                {hasMissingConnections && (
+                  <button
+                    className="text-[10px] text-destructive border border-destructive/40 px-1.5 py-0.5 shrink-0 hover:bg-destructive/10 transition-colors font-mono"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConnectionModal({ pipeName: pipe.config.name, connections: pipe.config.connections ?? [] });
+                    }}
+                    title="required connections are not configured"
+                  >
+                    setup
+                  </button>
+                )}
+
                 {/* Schedule */}
                 <span
                   className="text-xs text-muted-foreground shrink-0 text-right font-mono truncate max-w-[140px]"
@@ -1543,12 +1574,20 @@ export function PipesSection() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
-                      onClick={() => runPipe(pipe.config.name)}
+                      className={cn("h-7 w-7", hasMissingConnections && "text-destructive")}
+                      onClick={() => {
+                        if (hasMissingConnections) {
+                          setConnectionModal({ pipeName: pipe.config.name, connections: pipe.config.connections ?? [] });
+                        } else {
+                          runPipe(pipe.config.name);
+                        }
+                      }}
                       disabled={runningPipe === pipe.config.name}
-                      title="run pipe"
+                      title={hasMissingConnections ? "configure required connections first" : "run pipe"}
                     >
-                      <Play className="h-3.5 w-3.5" />
+                      {hasMissingConnections
+                        ? <AlertCircle className="h-3.5 w-3.5" />
+                        : <Play className="h-3.5 w-3.5" />}
                     </Button>
                   )}
 
@@ -1768,8 +1807,10 @@ export function PipesSection() {
                                     <button
                                       className="text-destructive hover:underline"
                                       onClick={() => {
-                                        sessionStorage.setItem("openConnection", connId);
-                                        setSection("connections");
+                                        setConnectionModal({
+                                          pipeName: pipe.config.name,
+                                          connections: pipe.config.connections ?? [],
+                                        });
                                       }}
                                     >
                                       {label} — setup
@@ -2192,6 +2233,30 @@ export function PipesSection() {
           />
         </div>
       </form>
+
+      {connectionModal && (
+        <PostInstallConnectionsModal
+          open={!!connectionModal}
+          onOpenChange={(open) => {
+            if (!open) {
+              // If any required connection is still missing, disable the pipe
+              const stillMissing = connectionModal.connections.some((id) => {
+                const conn = availableConnections.find((c) => c.id === id);
+                return !conn || !conn.connected;
+              });
+              if (stillMissing) {
+                disablePipe(connectionModal.pipeName);
+              } else {
+                fetchPipes();
+              }
+              fetchConnections();
+              setConnectionModal(null);
+            }
+          }}
+          pipeName={connectionModal.pipeName}
+          connections={connectionModal.connections}
+        />
+      )}
 
       <UpgradeDialog
         open={showUpgrade}

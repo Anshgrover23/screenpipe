@@ -62,8 +62,6 @@ import remarkGfm from "remark-gfm";
 import posthog from "posthog-js";
 import { PipesSection } from "@/components/settings/pipes-section";
 import { ChatPrefillData } from "@/lib/chat-utils";
-import { PostInstallConnectionsModal } from "@/components/post-install-connections-modal";
-
 // --- Types ---
 
 interface StorePipe {
@@ -315,9 +313,6 @@ function DiscoverView() {
   // Source section
   const [sourceExpanded, setSourceExpanded] = useState(false);
 
-  // Post-install connections modal
-  const [postInstallData, setPostInstallData] = useState<{ pipeName: string; connections: string[] } | null>(null);
-
   // Unpublish state
   const [unpublishing, setUnpublishing] = useState(false);
 
@@ -480,24 +475,10 @@ function DiscoverView() {
       apiCache.invalidate("pipes/installed");
       setInstalledNames((prev) => new Set([...prev, pipeName]));
 
-      // Check if the pipe requires connections
+      // Signal to PipesSection to open the connection modal when the user navigates there
       const pipeConnections: string[] = data.connections || [];
       if (pipeConnections.length > 0) {
-        try {
-          const connRes = await fetch("http://localhost:3030/connections");
-          const connData = await connRes.json();
-          const integrations = connData.data || [];
-          const missingConnections = pipeConnections.filter((connId: string) => {
-            const integration = integrations.find((i: any) => i.id === connId);
-            return !integration?.connected;
-          });
-          if (missingConnections.length > 0) {
-            setPostInstallData({ pipeName, connections: pipeConnections });
-          }
-        } catch {
-          // If we can't check, still show the modal
-          setPostInstallData({ pipeName, connections: pipeConnections });
-        }
+        sessionStorage.setItem(`justInstalled:${pipeName}`, "1");
       }
     } catch (err: any) {
       toast({
@@ -759,15 +740,6 @@ function DiscoverView() {
         }}
       />
 
-      {/* Post-install connections modal */}
-      {postInstallData && (
-        <PostInstallConnectionsModal
-          open={!!postInstallData}
-          onOpenChange={(open) => { if (!open) setPostInstallData(null); }}
-          pipeName={postInstallData.pipeName}
-          connections={postInstallData.connections}
-        />
-      )}
     </div>
   );
 }
