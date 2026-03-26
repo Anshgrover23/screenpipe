@@ -58,6 +58,7 @@ import { useSettings } from "@/lib/hooks/use-settings";
 import { AIPresetsSelector } from "@/components/rewind/ai-presets-selector";
 import { useTeam } from "@/lib/hooks/use-team";
 import { useToast } from "@/components/ui/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 import { HelpTooltip } from "@/components/ui/help-tooltip";
 import { pipeExecutionToConversation } from "@/lib/pipe-ndjson-to-chat";
 import { saveConversationFile } from "@/lib/chat-storage";
@@ -1022,10 +1023,24 @@ export function PipesSection() {
           return !conn || !conn.connected;
         });
         if (missing.length > 0) {
+          const firstName = missing[0];
           toast({
             title: "connection required",
-            description: `this pipe needs ${missing.join(", ")} to be configured — go to Settings → Connections`,
+            description: `this pipe needs ${missing.join(", ")} to be configured`,
             variant: "destructive",
+            action: (
+              <ToastAction
+                altText="set up connection"
+                onClick={() => {
+                  sessionStorage.setItem("openConnection", firstName);
+                  const url = new URL(window.location.href);
+                  url.searchParams.set("section", "connections");
+                  window.location.href = url.toString();
+                }}
+              >
+                set up
+              </ToastAction>
+            ),
           });
           setRunningPipe(null);
           return;
@@ -1557,7 +1572,7 @@ export function PipesSection() {
                 </div>
 
                 {/* Toggle — only visible on hover */}
-                <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="opacity-0 group-hover:opacity-100 transition-opacity" title={pipe.config.enabled ? "auto-running on schedule — click to disable" : "auto-run disabled — pipe can still be run manually"}>
                   <Switch
                     checked={pipe.config.enabled}
                     onCheckedChange={(checked) =>
