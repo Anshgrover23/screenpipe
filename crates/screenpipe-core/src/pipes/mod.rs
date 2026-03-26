@@ -1326,6 +1326,29 @@ impl PipeManager {
             running.insert(name.to_string(), ExecutionHandle { pid: 0 });
         }
 
+        // Validate required connections are configured
+        if !config.connections.is_empty() {
+            let screenpipe_dir = self.pipes_dir.parent().unwrap_or(&self.pipes_dir);
+            let store = screenpipe_connect::connections::load_store(screenpipe_dir);
+            let missing: Vec<&str> = config.connections.iter()
+                .filter(|id| {
+                    !store.get(id.as_str())
+                        .map(|c| c.enabled && !c.credentials.is_empty())
+                        .unwrap_or(false)
+                })
+                .map(|id| id.as_str())
+                .collect();
+            if !missing.is_empty() {
+                // Remove the placeholder handle we just inserted
+                self.running.lock().await.remove(name);
+                return Err(anyhow!(
+                    "pipe '{}' requires unconfigured connections: {} — set them up in Settings → Connections",
+                    name,
+                    missing.join(", ")
+                ));
+            }
+        }
+
         // Resolve preset
         let (run_model, run_provider, run_provider_url, run_api_key, preset_prompt) =
             if let Some(preset_id) = config.preset.first() {
@@ -1717,6 +1740,29 @@ impl PipeManager {
                 }
                 // Placeholder handle; real PID comes via pid_tx channel
                 running.insert(name.to_string(), ExecutionHandle { pid: 0 });
+            }
+
+            // Validate required connections are configured
+            if !config.connections.is_empty() {
+                let screenpipe_dir = self.pipes_dir.parent().unwrap_or(&self.pipes_dir);
+                let store = screenpipe_connect::connections::load_store(screenpipe_dir);
+                let missing: Vec<&str> = config.connections.iter()
+                    .filter(|id| {
+                        !store.get(id.as_str())
+                            .map(|c| c.enabled && !c.credentials.is_empty())
+                            .unwrap_or(false)
+                    })
+                    .map(|id| id.as_str())
+                    .collect();
+                if !missing.is_empty() {
+                    // Remove the placeholder handle we just inserted
+                    self.running.lock().await.remove(name);
+                    return Err(anyhow!(
+                        "pipe '{}' requires unconfigured connections: {} — set them up in Settings → Connections",
+                        name,
+                        missing.join(", ")
+                    ));
+                }
             }
 
             let started_at = Utc::now();

@@ -1012,6 +1012,26 @@ export function PipesSection() {
       if (name in pendingConfigSaves.current) {
         await pendingConfigSaves.current[name];
       }
+
+      // Validate required connections are configured
+      const pipe = pipes.find((p) => p.config.name === name);
+      const requiredConnections: string[] = pipe?.config?.connections ?? [];
+      if (requiredConnections.length > 0) {
+        const missing = requiredConnections.filter((id) => {
+          const conn = availableConnections.find((c) => c.id === id);
+          return !conn || !conn.connected;
+        });
+        if (missing.length > 0) {
+          toast({
+            title: "connection required",
+            description: `this pipe needs ${missing.join(", ")} to be configured — go to Settings → Connections`,
+            variant: "destructive",
+          });
+          setRunningPipe(null);
+          return;
+        }
+      }
+
       const minDelay = new Promise((r) => setTimeout(r, 2000));
       await fetch(`http://localhost:3030/pipes/${name}/run`, {
         method: "POST",
