@@ -1673,9 +1673,19 @@ export function PipesSection() {
                 </div>
 
                 {/* Toggle — only visible on hover */}
-                <div className="opacity-0 group-hover:opacity-100 transition-opacity" title={pipe.config.enabled ? "auto-running on schedule — click to disable" : "auto-run disabled — pipe can still be run manually"}>
+                <div
+                  className="opacity-0 group-hover:opacity-100 transition-opacity"
+                  title={
+                    hasMissingConnections
+                      ? "configure required connections before enabling auto-run"
+                      : pipe.config.enabled
+                        ? "auto-running on schedule — click to disable"
+                        : "auto-run disabled — pipe can still be run manually"
+                  }
+                >
                   <Switch
                     checked={pipe.config.enabled}
+                    disabled={hasMissingConnections}
                     onCheckedChange={(checked) =>
                       togglePipe(pipe.config.name, checked)
                     }
