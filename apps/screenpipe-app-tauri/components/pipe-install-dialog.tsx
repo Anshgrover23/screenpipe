@@ -5,6 +5,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useQueryState } from "nuqs";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -48,6 +49,7 @@ export function PipeInstallDialog() {
   const [loading, setLoading] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [registryDetail, setRegistryDetail] = useState<RegistryPipeDetail | null>(null);
+  const [, setSection] = useQueryState("section");
   const { toast } = useToast();
 
   // Listen for install-pipe events from deep link handler
@@ -128,18 +130,21 @@ export function PipeInstallDialog() {
         source: isRegistrySource(url) ? "registry" : "url",
       });
 
-      toast({
-        title: `pipe "${data.name}" installed`,
-        description: "go to settings > pipes to enable it",
-      });
-
-      // Signal to PipesSection to open the connection modal when the user navigates there
       const pipeConnections: string[] = data.connections || [];
       if (pipeConnections.length > 0) {
+        // sessionStorage fallback for when PipesSection isn't mounted yet
         sessionStorage.setItem(`justInstalled:${data.name}`, "1");
+        // Also fire event in case PipesSection is already mounted
+        window.dispatchEvent(
+          new CustomEvent("screenpipe:pipeInstalled", {
+            detail: { pipeName: data.name, connections: pipeConnections },
+          })
+        );
       }
 
       setRequest(null);
+      // Navigate to pipes tab so user sees installed pipe + connection modal
+      setSection("pipes");
     } catch (err: any) {
       toast({
         title: "failed to install pipe",

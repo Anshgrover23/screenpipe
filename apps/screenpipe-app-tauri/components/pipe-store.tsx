@@ -258,7 +258,7 @@ export function PipeStoreView() {
 
       {/* Tab content */}
       {activeTab === "discover" ? (
-        <DiscoverView />
+        <DiscoverView onInstalled={() => setActiveTab("my-pipes")} />
       ) : activeTab === "fleet" ? (
         <PipeMonitorView />
       ) : (
@@ -270,7 +270,7 @@ export function PipeStoreView() {
 
 // --- Discover View ---
 
-function DiscoverView() {
+function DiscoverView({ onInstalled }: { onInstalled?: () => void }) {
   const { settings } = useSettings();
   const { toast } = useToast();
   const token = settings.user?.token;
@@ -475,11 +475,13 @@ function DiscoverView() {
       apiCache.invalidate("pipes/installed");
       setInstalledNames((prev) => new Set([...prev, pipeName]));
 
-      // Signal to PipesSection to open the connection modal when the user navigates there
+      // Set sessionStorage so PipesSection picks it up when it mounts on the my-pipes tab
       const pipeConnections: string[] = data.connections || [];
       if (pipeConnections.length > 0) {
         sessionStorage.setItem(`justInstalled:${pipeName}`, "1");
       }
+      // Switch to my-pipes tab — PipesSection mounts and auto-opens the connection modal
+      onInstalled?.();
     } catch (err: any) {
       toast({
         title: "failed to install pipe",
