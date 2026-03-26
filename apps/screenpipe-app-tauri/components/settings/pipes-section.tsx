@@ -59,6 +59,7 @@ import { AIPresetsSelector } from "@/components/rewind/ai-presets-selector";
 import { useTeam } from "@/lib/hooks/use-team";
 import { useToast } from "@/components/ui/use-toast";
 import { ToastAction } from "@/components/ui/toast";
+import { useQueryState } from "nuqs";
 import { HelpTooltip } from "@/components/ui/help-tooltip";
 import { pipeExecutionToConversation } from "@/lib/pipe-ndjson-to-chat";
 import { saveConversationFile } from "@/lib/chat-storage";
@@ -661,6 +662,7 @@ export function PipesSection() {
   const { settings, updateSettings } = useSettings();
   const team = useTeam();
   const { toast } = useToast();
+  const [, setSection] = useQueryState("section");
   const isTeamAdmin = !!team.team && team.role === "admin";
   const [sharingPipe, setSharingPipe] = useState<string | null>(null);
   const [sharingPublic, setSharingPublic] = useState<string | null>(null);
@@ -1033,9 +1035,7 @@ export function PipesSection() {
                 altText="set up connection"
                 onClick={() => {
                   sessionStorage.setItem("openConnection", firstName);
-                  const url = new URL(window.location.href);
-                  url.searchParams.set("section", "connections");
-                  window.location.href = url.toString();
+                  setSection("connections");
                 }}
               >
                 set up
@@ -1275,11 +1275,7 @@ export function PipesSection() {
           }}>
             {refreshing ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : <RefreshCw className="h-4 w-4" />}
           </Button>
-          <Button variant="outline" size="sm" onClick={() => {
-            const url = new URL(window.location.href);
-            url.searchParams.set("section", "connections");
-            window.location.href = url.toString();
-          }}>
+          <Button variant="outline" size="sm" onClick={() => setSection("connections")}>
             <Link className="h-4 w-4 mr-1" />
             connections
           </Button>
@@ -1710,9 +1706,7 @@ export function PipesSection() {
                                       className="text-destructive hover:underline"
                                       onClick={() => {
                                         sessionStorage.setItem("openConnection", connId);
-                                        const url = new URL(window.location.href);
-                                        url.searchParams.set("section", "connections");
-                                        window.location.href = url.toString();
+                                        setSection("connections");
                                       }}
                                     >
                                       {conn?.name || connId} — setup
