@@ -52,6 +52,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useSettings } from "@/lib/hooks/use-settings";
@@ -260,7 +263,7 @@ function parsePipeError(stderr: string): {
       if (parsed.error === "credits_exhausted") {
         return {
           type: "credits_exhausted",
-          message: parsed.message || "no credits remaining — buy more at screenpi.pe",
+          message: parsed.message || "daily ai limit reached — upgrade or wait until tomorrow",
           credits_remaining: parsed.credits_remaining ?? 0,
         };
       }
@@ -292,6 +295,7 @@ interface AvailableConnection {
   name: string;
   icon: string;
   connected: boolean;
+  instances?: { instanceKey: string; instanceLabel: string }[];
 }
 
 interface PipeStatus {
@@ -624,7 +628,7 @@ function PipePresetSelector({
             }
           />
           <p className="text-[10px] text-muted-foreground mt-1">
-            used when primary hits rate limit or credits run out
+            used when primary hits rate limit
           </p>
         </div>
       ) : (
@@ -674,6 +678,7 @@ export function PipesSection() {
     return "all";
   });
   const [searchQuery, setSearchQuery] = useState("");
+  const [pipeTypeFilter, setPipeTypeFilter] = useState<"scheduled" | "manual">("scheduled");
   const [availableConnections, setAvailableConnections] = useState<AvailableConnection[]>([]);
   const [availableUpdates, setAvailableUpdates] = useState<Record<string, { latest_version: number; installed_version: number; locally_modified: boolean }>>({});
   const [updatingPipe, setUpdatingPipe] = useState<string | null>(null);
@@ -705,8 +710,9 @@ export function PipesSection() {
         if (!p.config.name.toLowerCase().includes(q)) return false;
       }
 
-      // Only show scheduled pipes
-      if (!isScheduledPipe(p)) return false;
+      // Filter by pipe type (scheduled vs manual)
+      if (pipeTypeFilter === "scheduled" && !isScheduledPipe(p)) return false;
+      if (pipeTypeFilter === "manual" && !isManualPipe(p)) return false;
 
       return true;
     })
@@ -817,9 +823,25 @@ export function PipesSection() {
       const res = await fetch("http://localhost:3030/connections");
       const data = await res.json();
       if (data.data) {
-        setAvailableConnections(
-          data.data.map((c: any) => ({ id: c.id, name: c.name, icon: c.icon, connected: c.connected }))
-        );
+        const conns: AvailableConnection[] = data.data.map((c: any) => ({
+          id: c.id, name: c.name, icon: c.icon, connected: c.connected,
+        }));
+        // fetch instances for connected integrations to support multi-instance selection
+        await Promise.all(conns.filter(c => c.connected).map(async (c) => {
+          try {
+            const instRes = await fetch(`http://localhost:3030/connections/${c.id}/instances`);
+            if (!instRes.ok) return;
+            const instData = await instRes.json();
+            const list = instData.data || instData.instances || instData || [];
+            if (Array.isArray(list) && list.length > 1) {
+              c.instances = list.map((inst: any) => ({
+                instanceKey: inst.instance ? `${c.id}:${inst.instance}` : c.id,
+                instanceLabel: inst.instance ? `${c.name} (${inst.instance})` : c.name,
+              }));
+            }
+          } catch { /* ignore */ }
+        }));
+        setAvailableConnections(conns);
       }
     } catch { /* server may not be running */ }
   }, []);
@@ -1250,7 +1272,9 @@ export function PipesSection() {
         <div>
           <h3 className="text-lg font-medium">My Pipes</h3>
           <p className="text-sm text-muted-foreground">
-            scheduled agents that run on your screen data
+            {pipeTypeFilter === "scheduled"
+              ? "scheduled agents that run on your screen data"
+              : "pipes you trigger manually"}
             {" · "}
             <a
               href="https://docs.screenpi.pe/pipes"
@@ -1280,6 +1304,31 @@ export function PipesSection() {
             connections
           </Button>
         </div>
+      </div>
+
+      {/* Scheduled / Manual sub-tabs */}
+      <div className="flex items-center gap-4 border-b border-border">
+        {(["scheduled", "manual"] as const).map((tab) => {
+          const count = pipes.filter((p) => {
+            if (pipeFilter === "team" && !sharedPipeNames.has(p.config.name)) return false;
+            if (pipeFilter === "personal" && sharedPipeNames.has(p.config.name)) return false;
+            return tab === "scheduled" ? isScheduledPipe(p) : isManualPipe(p);
+          }).length;
+          return (
+            <button
+              key={tab}
+              onClick={() => setPipeTypeFilter(tab)}
+              className={cn(
+                "pb-2 text-sm transition-colors duration-150 border-b-2 -mb-px capitalize",
+                pipeTypeFilter === tab
+                  ? "border-foreground text-foreground font-medium"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {tab} ({count})
+            </button>
+          );
+        })}
       </div>
 
       {/* Search + filter chips */}
@@ -1328,6 +1377,17 @@ export function PipesSection() {
           <CardContent className="py-8 text-center text-muted-foreground">
             {searchQuery ? (
               <p>no pipes match your search</p>
+            ) : pipeTypeFilter === "manual" ? (
+              <>
+                <p>no manual pipes installed</p>
+                <p className="text-sm mt-2">
+                  manual pipes use{" "}
+                  <code className="text-xs bg-muted px-1 py-0.5 rounded">
+                    schedule: manual
+                  </code>
+                  {" "}in their frontmatter
+                </p>
+              </>
             ) : pipeFilter === "all" ? (
               <>
                 <p>no pipes installed</p>
@@ -1443,7 +1503,7 @@ export function PipesSection() {
                     : pipe.config.schedule || "manual"}
                 >
                   {(pipe.config.trigger?.events?.length || 0) + (pipe.config.trigger?.custom?.length || 0) > 0
-                    ? `⚡ ${(pipe.config.trigger?.events?.length || 0) + (pipe.config.trigger?.custom?.length || 0)} trigger${((pipe.config.trigger?.events?.length || 0) + (pipe.config.trigger?.custom?.length || 0)) > 1 ? "s" : ""}`
+                    ? `› ${(pipe.config.trigger?.events?.length || 0) + (pipe.config.trigger?.custom?.length || 0)} trigger${((pipe.config.trigger?.events?.length || 0) + (pipe.config.trigger?.custom?.length || 0)) > 1 ? "s" : ""}`
                     : humanizeSchedule(pipe.config.schedule)}
                 </span>
 
@@ -1690,8 +1750,11 @@ export function PipesSection() {
                           <Label className="text-xs mb-2 block cursor-help" title="give the agent access to your apps (Slack, Obsidian, CRM, etc.) — credentials are fetched at runtime">connections</Label>
                           <div className="flex flex-wrap items-center gap-2">
                             {(pipe.config.connections || []).map((connId) => {
-                              const conn = availableConnections.find((c) => c.id === connId);
+                              const baseId = connId.includes(":") ? connId.split(":")[0] : connId;
+                              const instanceName = connId.includes(":") ? connId.split(":").slice(1).join(":") : null;
+                              const conn = availableConnections.find((c) => c.id === baseId);
                               const isConnected = conn?.connected ?? false;
+                              const label = instanceName ? `${conn?.name || baseId} (${instanceName})` : (conn?.name || connId);
                               return (
                                 <div
                                   key={connId}
@@ -1709,10 +1772,10 @@ export function PipesSection() {
                                         setSection("connections");
                                       }}
                                     >
-                                      {conn?.name || connId} — setup
+                                      {label} — setup
                                     </button>
                                   ) : (
-                                    <span>{conn?.name || connId}</span>
+                                    <span>{label}</span>
                                   )}
                                   <button
                                     className="text-muted-foreground hover:text-foreground transition-colors duration-150"
@@ -1734,21 +1797,53 @@ export function PipesSection() {
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="start" className="max-h-48 overflow-y-auto">
-                                {availableConnections
-                                  .filter((c) => !(pipe.config.connections || []).includes(c.id))
-                                  .map((conn) => (
-                                    <DropdownMenuItem key={conn.id} onClick={() => {
-                                      const updated = [...(pipe.config.connections || []), conn.id];
-                                      setPipes((prev) => prev.map((p) => p.config.name === pipe.config.name ? { ...p, config: { ...p.config, connections: updated } } : p));
-                                      fetch(`http://localhost:3030/pipes/${pipe.config.name}/config`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ connections: updated }) }).then(() => fetchPipes());
-                                    }}>
-                                      <span className="text-xs font-mono">{conn.name}</span>
-                                      <span className={cn("ml-auto w-1.5 h-1.5", conn.connected ? "bg-foreground" : "bg-muted-foreground/30")} />
-                                    </DropdownMenuItem>
-                                  ))}
-                                {availableConnections.filter((c) => !(pipe.config.connections || []).includes(c.id)).length === 0 && (
-                                  <DropdownMenuItem disabled><span className="text-xs text-muted-foreground">all connections added</span></DropdownMenuItem>
-                                )}
+                                {(() => {
+                                  const existing = pipe.config.connections || [];
+                                  const addConn = (key: string) => {
+                                    const updated = [...existing, key];
+                                    setPipes((prev) => prev.map((p) => p.config.name === pipe.config.name ? { ...p, config: { ...p.config, connections: updated } } : p));
+                                    fetch(`http://localhost:3030/pipes/${pipe.config.name}/config`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ connections: updated }) }).then(() => fetchPipes());
+                                  };
+                                  // filter to connections not yet fully added
+                                  const available = availableConnections.filter((c) => {
+                                    if (c.instances && c.instances.length > 1) {
+                                      return c.instances.some((inst) => !existing.includes(inst.instanceKey));
+                                    }
+                                    return !existing.includes(c.id);
+                                  });
+                                  if (available.length === 0) {
+                                    return <DropdownMenuItem disabled><span className="text-xs text-muted-foreground">all connections added</span></DropdownMenuItem>;
+                                  }
+                                  return available.map((conn) => {
+                                    // multi-instance: show sub-menu to pick instance
+                                    if (conn.instances && conn.instances.length > 1) {
+                                      const remainingInstances = conn.instances.filter((inst) => !existing.includes(inst.instanceKey));
+                                      if (remainingInstances.length === 0) return null;
+                                      return (
+                                        <DropdownMenuSub key={conn.id}>
+                                          <DropdownMenuSubTrigger className="text-xs font-mono">
+                                            {conn.name}
+                                            <span className={cn("ml-auto w-1.5 h-1.5", conn.connected ? "bg-foreground" : "bg-muted-foreground/30")} />
+                                          </DropdownMenuSubTrigger>
+                                          <DropdownMenuSubContent>
+                                            {remainingInstances.map((inst) => (
+                                              <DropdownMenuItem key={inst.instanceKey} onClick={() => addConn(inst.instanceKey)}>
+                                                <span className="text-xs font-mono">{inst.instanceLabel}</span>
+                                              </DropdownMenuItem>
+                                            ))}
+                                          </DropdownMenuSubContent>
+                                        </DropdownMenuSub>
+                                      );
+                                    }
+                                    // single instance: direct click
+                                    return (
+                                      <DropdownMenuItem key={conn.id} onClick={() => addConn(conn.id)}>
+                                        <span className="text-xs font-mono">{conn.name}</span>
+                                        <span className={cn("ml-auto w-1.5 h-1.5", conn.connected ? "bg-foreground" : "bg-muted-foreground/30")} />
+                                      </DropdownMenuItem>
+                                    );
+                                  });
+                                })()}
                               </DropdownMenuContent>
                             </DropdownMenu>
                           </div>
@@ -1764,7 +1859,7 @@ export function PipesSection() {
                             {/* Show built-in event triggers (from pipe.md frontmatter) */}
                             {(pipe.config.trigger?.events || []).map((event: string, i: number) => (
                               <div key={`ev-${i}`} className="flex items-center gap-1.5 group/item">
-                                <span className="text-xs bg-muted/50 border px-3 py-1.5 flex-1 font-mono">⚡ {event.replace(/_/g, " ")}</span>
+                                <span className="text-xs bg-muted/50 border px-3 py-1.5 flex-1 font-mono">› {event.replace(/_/g, " ")}</span>
                                 <button className="text-xs text-muted-foreground/0 group-hover/item:text-muted-foreground hover:!text-destructive transition-all duration-150" onClick={() => {
                                   const updated = (pipe.config.trigger?.events || []).filter((_: string, j: number) => j !== i);
                                   const newTrigger = { ...pipe.config.trigger, events: updated };
@@ -1776,7 +1871,7 @@ export function PipesSection() {
                             {/* Show custom plain-language triggers */}
                             {(pipe.config.trigger?.custom || []).map((trigger: string, i: number) => (
                                 <div key={i} className="flex items-center gap-1.5 group/item">
-                                  <span className="text-xs bg-muted/50 px-2 py-1 rounded flex-1 font-mono">⚡ {trigger}</span>
+                                  <span className="text-xs bg-muted/50 px-2 py-1 rounded flex-1 font-mono">› {trigger}</span>
                                   <button className="text-xs text-muted-foreground/0 group-hover/item:text-muted-foreground hover:!text-destructive transition-all duration-150" onClick={() => {
                                     const updated = (pipe.config.trigger?.custom || []).filter((_: string, j: number) => j !== i);
                                     const newTrigger = { ...pipe.config.trigger, custom: updated };

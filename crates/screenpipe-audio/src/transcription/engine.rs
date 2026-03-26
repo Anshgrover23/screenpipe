@@ -122,7 +122,23 @@ impl TranscriptionEngine {
             }
 
             AudioTranscriptionEngine::Parakeet => {
-                #[cfg(feature = "parakeet")]
+                // Auto-upgrade to MLX (GPU) when the feature is compiled in
+                #[cfg(feature = "parakeet-mlx")]
+                {
+                    info!("parakeet selected — auto-upgrading to parakeet-mlx (Metal GPU)");
+                    let model = tokio::task::spawn_blocking(|| {
+                        audiopipe::Model::from_pretrained("parakeet-tdt-0.6b-v3-mlx")
+                    })
+                    .await
+                    .map_err(|e| anyhow!("parakeet-mlx model loading task panicked: {}", e))?
+                    .map_err(|e| anyhow!("failed to load parakeet-mlx model: {}", e))?;
+                    info!("parakeet-tdt-0.6b-v3-mlx (GPU) model loaded successfully");
+                    Ok(Self::ParakeetMlx {
+                        model: Arc::new(StdMutex::new(model)),
+                        vocabulary,
+                    })
+                }
+                #[cfg(all(feature = "parakeet", not(feature = "parakeet-mlx")))]
                 {
                     let model = tokio::task::spawn_blocking(|| {
                         audiopipe::Model::from_pretrained("parakeet-tdt-0.6b-v3")
@@ -136,10 +152,10 @@ impl TranscriptionEngine {
                         vocabulary,
                     })
                 }
-                #[cfg(not(feature = "parakeet"))]
+                #[cfg(not(any(feature = "parakeet", feature = "parakeet-mlx")))]
                 {
                     Err(anyhow!(
-                        "parakeet engine selected but the 'parakeet' feature is not enabled"
+                        "parakeet engine selected but neither 'parakeet' nor 'parakeet-mlx' feature is enabled"
                     ))
                 }
             }
@@ -183,11 +199,7 @@ impl TranscriptionEngine {
 
                 info!("loading whisper model with GPU acceleration...");
                 let context = tokio::task::spawn_blocking(move || {
-                    WhisperContext::new_with_params(
-                        &quantized_path,
-                        context_param,
-                    )
-                    .map(Arc::new)
+                    WhisperContext::new_with_params(&quantized_path, context_param).map(Arc::new)
                 })
                 .await
                 .map_err(|e| anyhow!("whisper model loading task panicked: {}", e))?
@@ -427,10 +439,10 @@ impl TranscriptionSession {
             #[cfg(feature = "parakeet")]
             Self::Parakeet { model, .. } => {
                 let mut engine = model.lock().map_err(|e| anyhow!("stt model lock: {}", e))?;
-                // parakeet's ONNX encoder has fixed-size relative position encoding
-                // (~5000 mel frames ≈ 50s). chunk audio at 30s with 1s overlap,
-                // matching NVIDIA's recommended approach (arxiv 2509.14128).
-                // overlap regions are deduplicated via longest common word substring.
+                // parakeet's ONNX encoder supports up to ~50s but quality is best at <=30s.
+                // benchmarked: 30s hard chunks with no overlap gives 33.9% WER vs 34.5%
+                // with 1s overlap+LCS (the dedup algorithm eats correct words).
+                // this is a safety net — the reconciler already caps batches at 45s.
                 let chunk_samples = (sample_rate as usize) * 30;
                 if audio.len() <= chunk_samples {
                     let opts = audiopipe::TranscribeOptions::default();
@@ -439,40 +451,16 @@ impl TranscriptionSession {
                         .map_err(|e| anyhow!("{}", e))?;
                     Ok(result.text)
                 } else {
-                    let overlap_samples = sample_rate as usize; // 1s overlap
-                    let step = chunk_samples - overlap_samples;
-                    let mut texts: Vec<String> = Vec::new();
-                    let mut offset = 0;
-                    while offset < audio.len() {
-                        let end = (offset + chunk_samples).min(audio.len());
-                        let chunk = &audio[offset..end];
+                    let mut texts = Vec::new();
+                    for chunk in audio.chunks(chunk_samples) {
                         let opts = audiopipe::TranscribeOptions::default();
                         let result = engine
                             .transcribe_with_sample_rate(chunk, sample_rate, opts)
                             .map_err(|e| anyhow!("{}", e))?;
                         let text = result.text.trim().to_string();
                         if !text.is_empty() {
-                            if let Some(prev) = texts.last_mut() {
-                                // deduplicate overlap via LCS on words
-                                if let Some((prev_idx, _cur_idx, match_len)) =
-                                    super::text_utils::longest_common_word_substring(prev, &text)
-                                {
-                                    let prev_words: Vec<&str> = prev.split_whitespace().collect();
-                                    *prev = prev_words[..prev_idx].join(" ");
-                                    let cur_words: Vec<&str> = text.split_whitespace().collect();
-                                    let skip = _cur_idx + match_len;
-                                    if skip < cur_words.len() {
-                                        texts.push(cur_words[skip..].join(" "));
-                                    }
-                                } else {
-                                    texts.push(text);
-                                }
-                            } else {
-                                texts.push(text);
-                            }
+                            texts.push(text);
                         }
-                        if end >= audio.len() { break; }
-                        offset += step;
                     }
                     Ok(texts.join(" "))
                 }
