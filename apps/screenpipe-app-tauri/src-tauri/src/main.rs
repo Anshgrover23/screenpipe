@@ -558,6 +558,8 @@ async fn main() {
                 commands::get_enterprise_license_key,
                 commands::save_enterprise_license_key,
                 commands::get_disk_usage,
+                commands::list_cache_files,
+                commands::delete_cache_files,
                 commands::open_pipe_window,
                 commands::update_show_screenpipe_shortcut,
                 commands::show_window,
@@ -786,6 +788,7 @@ async fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::is_enterprise_build_cmd,
             commands::get_enterprise_license_key,
+            commands::save_enterprise_license_key,
             spawn_screenpipe,
             stop_screenpipe,
             recording::get_monitors,
@@ -807,6 +810,8 @@ async fn main() {
             write_browser_logs,
             commands::update_show_screenpipe_shortcut,
             commands::get_disk_usage,
+            commands::list_cache_files,
+            commands::delete_cache_files,
             commands::open_pipe_window,
             commands::show_window,
             commands::open_login_window,
@@ -1059,6 +1064,25 @@ async fn main() {
                     .to_path_buf();
                 let tessdata_path = exe_dir.join("tessdata");
                 env::set_var("TESSDATA_PREFIX", tessdata_path);
+            }
+
+            // Ensure mlx.metallib is discoverable by MLX (parakeet-mlx).
+            // Tauri bundles it in Contents/Resources/ but MLX looks next to the binary
+            // (Contents/MacOS/). Create a symlink so both paths work.
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(exe) = std::env::current_exe() {
+                    let macos_dir = exe.parent().unwrap_or(std::path::Path::new("."));
+                    let target = macos_dir.join("mlx.metallib");
+                    if !target.exists() {
+                        // Try Contents/Resources/mlx.metallib (Tauri resource)
+                        let resource = macos_dir.parent()
+                            .map(|contents| contents.join("Resources/mlx.metallib"));
+                        if let Some(src) = resource.filter(|p| p.exists()) {
+                            let _ = std::os::unix::fs::symlink(&src, &target);
+                        }
+                    }
+                }
             }
 
             // Autostart setup
