@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Download, ExternalLink, Check, Loader2, Copy, Terminal, LogIn, LogOut, Send, X, HelpCircle, Search, Calendar as CalendarIcon, Eye, EyeOff } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { commands } from "@/lib/utils/tauri";
-import { useSettings } from "@/lib/hooks/use-settings";
+import { useSettings, getStore } from "@/lib/hooks/use-settings";
 import { ensureChatGptPreset } from "@/lib/utils/chatgpt-preset";
 import { showChatWithPrefill } from "@/lib/chat-utils";
 import { Command } from "@tauri-apps/plugin-shell";
@@ -1389,6 +1389,17 @@ export function ConnectionsSection() {
   const [cursorInstalled, setCursorInstalled] = useState(false);
   const [chatgptConnected, setChatgptConnected] = useState(false);
   const [browserExtConnected, setBrowserExtConnected] = useState(false);
+  const [calendarUserDisconnected, setCalendarUserDisconnected] = useState(false);
+
+  const refreshCalendarTile = useCallback(() => {
+    getStore()
+      .then((store) => store.get<boolean>("calendarUserDisconnected"))
+      .then((val) => setCalendarUserDisconnected(val ?? false))
+      .catch(() => {});
+  }, []);
+
+  // Re-read on panel open/close and on explicit connect/disconnect
+  useEffect(() => { refreshCalendarTile(); }, [selected, refreshCalendarTile]);
 
   const refreshStatus = useCallback(() => {
     getInstalledMcpVersion().then(v => {
@@ -1474,8 +1485,11 @@ export function ConnectionsSection() {
       const api = integrations.find(i => i.id === h.id);
       if (api) h.connected = api.connected;
     }
+    // If user explicitly disconnected calendar, suppress the dot regardless of OS state
+    const calTile = hardcoded.find(h => h.id === "apple-calendar");
+    if (calTile && calendarUserDisconnected) calTile.connected = false;
     return [...hardcoded, ...apiTiles];
-  }, [os, claudeInstalled, cursorInstalled, chatgptConnected, browserExtConnected, integrations]);
+  }, [os, claudeInstalled, cursorInstalled, chatgptConnected, browserExtConnected, integrations, calendarUserDisconnected]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return allTiles;
@@ -1496,7 +1510,7 @@ export function ConnectionsSection() {
       case "browser-url": return <BrowserUrlCard />;
       case "voice-memos": return <VoiceMemosCard />;
       case "apple-intelligence": return <AppleIntelligenceCard />;
-      case "apple-calendar": return <CalendarCard />;
+      case "apple-calendar": return <CalendarCard onConnectionChange={refreshCalendarTile} />;
       case "google-calendar": return <GoogleCalendarCard />;
       case "ics-calendar": return <IcsCalendarCard />;
       case "openclaw": return <OpenClawCard />;

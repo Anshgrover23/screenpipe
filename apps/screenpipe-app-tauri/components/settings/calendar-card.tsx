@@ -56,7 +56,7 @@ interface CalendarEventItem {
   isAllDay: boolean;
 }
 
-export function CalendarCard() {
+export function CalendarCard({ onConnectionChange }: { onConnectionChange?: () => void } = {}) {
   const [os, setOs] = useState<string>("");
   const [enabled, setEnabled] = useState(false);
   const [authorized, setAuthorized] = useState(false);
@@ -160,6 +160,7 @@ export function CalendarCard() {
         setEnabled(true);
         await setCalendarPref(ENABLED_KEY, true);
         posthog.capture("calendar_authorized", { result: "granted" });
+        onConnectionChange?.();
         checkStatus();
       } else {
         setAuthDenied(true);
@@ -310,6 +311,7 @@ export function CalendarCard() {
                       setCalendarPref(STORE_KEY, true),
                       setCalendarPref(ENABLED_KEY, false),
                     ]);
+                    onConnectionChange?.();
                     posthog.capture("calendar_disconnected");
                   }}
                   className="text-xs text-muted-foreground hover:text-destructive h-7 px-2"
