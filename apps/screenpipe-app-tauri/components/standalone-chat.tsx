@@ -3511,7 +3511,7 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
                 placeholder={
                   disabledReason
                     ? disabledReason
-                    : "Ask about your screen... (type @ for filters)"
+                    : "Ask anything about your screen activity..."
                 }
                 disabled={!canChat}
                 spellCheck={false}
