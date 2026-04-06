@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useSettings, ChatMessage, ChatConversation } from "@/lib/hooks/use-settings";
 import { cn } from "@/lib/utils";
-import { Loader2, Send, Square, User, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, Filter, RefreshCw } from "lucide-react";
+import { Loader2, Send, Square, User, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, RefreshCw } from "lucide-react";
 import { SchedulePromptDialog } from "@/components/chat/schedule-prompt-dialog";
 import { toast } from "@/components/ui/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
@@ -45,7 +45,7 @@ import {
   formatShortcutDisplay,
 } from "@/lib/chat-utils";
 import { useAutoSuggestions } from "@/lib/hooks/use-auto-suggestions";
-import { SummaryCards } from "@/components/chat/summary-cards";
+import { QuickActionPills } from "@/components/chat/quick-action-pills";
 import { type CustomTemplate } from "@/lib/summary-templates";
 import { usePipes } from "@/lib/hooks/use-pipes";
 
@@ -1523,6 +1523,8 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
   const needsLogin = activePreset?.provider === "screenpipe-cloud" && !settings.user?.token;
   // Pi auto-starts on first message, so don't block chat when Pi is not running
   const canChat = hasPresets && hasValidModel && !needsLogin && !piStarting;
+  // True when the chat is in the initial empty state with a valid setup — drives centered layout
+  const isEmpty = messages.length === 0 && hasPresets && hasValidModel && !needsLogin;
 
   const getDisabledReason = (): string | null => {
     if (!hasPresets) return "No AI presets configured";
@@ -3002,8 +3004,8 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
         </kbd>
       </div>
 
-      {/* Main content area with optional history sidebar */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* Main content area with optional history sidebar — collapsed when empty so input can center */}
+      <div className={cn("flex overflow-hidden", isEmpty ? "h-0" : "flex-1")}>
         {/* History Sidebar */}
         <AnimatePresence>
           {showHistory && (
@@ -3177,18 +3179,6 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
             )}
           </div>
         )}
-        {messages.length === 0 && hasPresets && hasValidModel && !needsLogin && (
-          <SummaryCards
-            onSendMessage={sendMessage}
-            autoSuggestions={autoSuggestions}
-            customTemplates={customTemplates}
-            onSaveCustomTemplate={saveCustomTemplate}
-            onDeleteCustomTemplate={deleteCustomTemplate}
-            userName={settings.userName}
-            templatePipes={templatePipes}
-            pipesLoading={pipesLoading}
-          />
-        )}
         <AnimatePresence mode="popLayout">
           {messages
             .filter((m) => {
@@ -3337,10 +3327,29 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
       </div>
       </div> {/* End of main content area with history sidebar */}
 
-      {/* Input */}
-      <div className="relative border-t border-border/50 bg-gradient-to-t from-muted/20 to-transparent">
-        <div className="max-w-4xl mx-auto w-full">
-        {/* Prefill, filters, suggestions first; then attached images in gap; then agent bar; then form */}
+      {/* Input — centered on empty state, pinned at bottom when chatting */}
+      <div className={cn(
+        isEmpty
+          ? "flex-1 flex flex-col items-center justify-center"
+          : "relative border-t border-border/50 bg-gradient-to-t from-muted/20 to-transparent"
+      )}>
+        {/* Icon + title — shown only on empty state */}
+        {isEmpty && (
+          <div className="mb-8 flex flex-col items-center text-center">
+            <div className="relative mx-auto mb-4 w-fit">
+              <div className="absolute -inset-4 border border-dashed border-border/50" />
+              <div className="absolute -inset-2 border border-border/30" />
+              <PipeAIIconLarge size={44} thinking={false} className="relative text-foreground/80" />
+            </div>
+            <h3 className="text-base font-medium mb-1 text-foreground">
+              {settings.userName ? `How can I help, ${settings.userName}?` : "How can I help today?"}
+            </h3>
+            <p className="text-[12px] text-muted-foreground">
+              One-click summaries from your screen activity
+            </p>
+          </div>
+        )}
+        <div className={cn("w-full", isEmpty ? "max-w-2xl px-4" : "max-w-4xl mx-auto")}>
         {/* Prefill context indicator from search */}
         {(prefillContext || prefillFrameId) && (
           <div className="px-3 py-2 border-b border-border/30 bg-muted/30">
@@ -3388,57 +3397,6 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
           </div>
         )}
 
-        {/* Active filters chips */}
-        {hasActiveFilters && (
-          <div className="px-3 py-2 border-b border-border/30 flex flex-wrap gap-1.5">
-            {activeFilters.timeRanges.map((range, idx) => (
-              <button
-                key={`time-${idx}`}
-                type="button"
-                onClick={() => removeFilter("time", range.label)}
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 rounded-full hover:bg-blue-500/20 transition-colors"
-              >
-                <span>🕐</span>
-                <span>{range.label}</span>
-                <X className="w-2.5 h-2.5 ml-0.5" />
-              </button>
-            ))}
-            {activeFilters.contentType && (
-              <button
-                type="button"
-                onClick={() => removeFilter("content")}
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 rounded-full hover:bg-purple-500/20 transition-colors"
-              >
-                <span>{activeFilters.contentType === "audio" ? "🎤" : "🖥️"}</span>
-                <span>{activeFilters.contentType}</span>
-                <X className="w-2.5 h-2.5 ml-0.5" />
-              </button>
-            )}
-            {activeFilters.appName && (
-              <button
-                type="button"
-                onClick={() => removeFilter("app")}
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium bg-green-500/10 text-green-600 dark:text-green-400 border border-green-500/20 rounded-full hover:bg-green-500/20 transition-colors"
-              >
-                <span>📱</span>
-                <span>{activeFilters.appName}</span>
-                <X className="w-2.5 h-2.5 ml-0.5" />
-              </button>
-            )}
-            {activeFilters.speakerName && (
-              <button
-                type="button"
-                onClick={() => removeFilter("speaker")}
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium bg-orange-500/10 text-orange-600 dark:text-orange-400 border border-orange-500/20 rounded-full hover:bg-orange-500/20 transition-colors"
-              >
-                <span>👤</span>
-                <span>{activeFilters.speakerName}</span>
-                <X className="w-2.5 h-2.5 ml-0.5" />
-              </button>
-            )}
-          </div>
-        )}
-
         {/* Follow-up suggestions (TikTok-style) */}
         <AnimatePresence>
           {!isLoading && followUpSuggestions.length > 0 && messages.length > 0 && (
@@ -3483,209 +3441,9 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
           </div>
         )}
 
-        {/* Attached images in the gap (above agent bar, like reference); click to open full-screen viewer */}
-        {pastedImages.length > 0 && (
-          <div className="px-3 py-2 border-b border-border/30 flex flex-wrap items-center gap-2">
-            {pastedImages.map((img, i) => (
-              <div key={i} className="relative group shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setImageViewer({ images: pastedImages, index: i })}
-                  className="block rounded-lg border border-border/50 shadow-sm overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={img}
-                    alt={`Attached ${i + 1}`}
-                    className="h-20 w-20 min-h-20 min-w-20 object-cover cursor-pointer"
-                  />
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); setPastedImages(prev => prev.filter((_, idx) => idx !== i)); }}
-                  className="absolute -top-1.5 -right-1.5 w-6 h-6 bg-destructive text-destructive-foreground rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-md hover:bg-destructive/90"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="p-2 border-b border-border/30 flex items-center gap-2">
-          <Popover open={appFilterOpen} onOpenChange={setAppFilterOpen}>
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                className={cn(
-                  "shrink-0 flex items-center gap-1 px-2 h-10 text-[11px] font-mono border rounded-md transition-colors",
-                  hasActiveFilters
-                    ? "border-foreground text-foreground"
-                    : "border-border text-muted-foreground hover:text-foreground hover:border-foreground"
-                )}
-                title="Search filters"
-              >
-                <Filter className="w-3 h-3" />
-                <span>filter</span>
-                {hasActiveFilters && (
-                  <span className="text-[10px] text-muted-foreground">
-                    ({(activeFilters.timeRanges.length > 0 ? 1 : 0) +
-                      (activeFilters.contentType ? 1 : 0) +
-                      (activeFilters.appName ? 1 : 0) +
-                      (activeFilters.speakerName ? 1 : 0)})
-                  </span>
-                )}
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-64 p-0 max-h-[360px] overflow-y-auto" align="start">
-              {/* Time filters */}
-              <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground bg-muted/30 border-b border-border/50">
-                time
-              </div>
-              {STATIC_MENTION_SUGGESTIONS.filter((s) => s.category === "time").map((s) => {
-                const isActive = activeFilters.timeRanges.some((r) => r.label === s.description);
-                return (
-                  <button
-                    key={s.tag}
-                    type="button"
-                    onClick={() => {
-                      if (isActive) {
-                        removeFilter("time", s.description);
-                      } else {
-                        setInput((prev) => `${s.tag} ${prev.trim()}`.trim() + " ");
-                      }
-                      setAppFilterOpen(false);
-                    }}
-                    className={cn(
-                      "w-full px-3 py-1.5 text-left text-xs font-mono hover:bg-muted/50 transition-colors flex items-center justify-between gap-2",
-                      isActive && "bg-muted"
-                    )}
-                  >
-                    <span>{s.tag}</span>
-                    <span className="text-[10px] text-muted-foreground">{s.description}</span>
-                  </button>
-                );
-              })}
-
-              {/* Content type filters */}
-              <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground bg-muted/30 border-b border-border/50 border-t">
-                content type
-              </div>
-              {STATIC_MENTION_SUGGESTIONS.filter((s) => s.category === "content").map((s) => {
-                const contentTypeMap: Record<string, string> = { screen: "screen", audio: "audio", input: "input" };
-                const tagName = s.tag.slice(1);
-                const isActive = activeFilters.contentType === (contentTypeMap[tagName] || tagName);
-                return (
-                  <button
-                    key={s.tag}
-                    type="button"
-                    onClick={() => {
-                      if (isActive) {
-                        removeFilter("content");
-                      } else {
-                        if (activeFilters.contentType) removeFilter("content");
-                        setInput((prev) => `${s.tag} ${prev.trim()}`.trim() + " ");
-                      }
-                      setAppFilterOpen(false);
-                    }}
-                    className={cn(
-                      "w-full px-3 py-1.5 text-left text-xs font-mono hover:bg-muted/50 transition-colors flex items-center justify-between gap-2",
-                      isActive && "bg-muted"
-                    )}
-                  >
-                    <span>{s.tag}</span>
-                    <span className="text-[10px] text-muted-foreground">{s.description}</span>
-                  </button>
-                );
-              })}
-
-              {/* App filters */}
-              <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground bg-muted/30 border-b border-border/50 border-t">
-                apps
-              </div>
-              {appMentionSuggestions.length === 0 ? (
-                <div className="px-3 py-2 text-[10px] text-muted-foreground">no apps detected yet</div>
-              ) : (
-                appMentionSuggestions.map((suggestion) => {
-                  const isActive = activeFilters.appName === suggestion.appName;
-                  return (
-                    <button
-                      key={`app-${suggestion.tag}`}
-                      type="button"
-                      onClick={() => {
-                        if (isActive) {
-                          removeFilter("app");
-                        } else {
-                          if (activeFilters.appName) removeFilter("app");
-                          setInput((prev) => `${suggestion.tag} ${prev.trim()}`.trim() + " ");
-                        }
-                        setAppFilterOpen(false);
-                      }}
-                      className={cn(
-                        "w-full px-3 py-1.5 text-left text-xs font-mono hover:bg-muted/50 transition-colors flex items-center justify-between gap-2",
-                        isActive && "bg-muted"
-                      )}
-                    >
-                      <span>{suggestion.tag}</span>
-                      <span className="text-[10px] text-muted-foreground truncate">{suggestion.description}</span>
-                    </button>
-                  );
-                })
-              )}
-
-              {/* Speakers */}
-              {recentSpeakers.length > 0 && (
-                <>
-                  <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground bg-muted/30 border-b border-border/50 border-t">
-                    speakers
-                  </div>
-                  {recentSpeakers.map((s) => {
-                    const speakerName = s.tag.startsWith('@"') ? s.tag.slice(2, -1) : s.tag.slice(1);
-                    const isActive = activeFilters.speakerName === speakerName;
-                    return (
-                      <button
-                        key={`speaker-${s.tag}`}
-                        type="button"
-                        onClick={() => {
-                          if (isActive) {
-                            removeFilter("speaker");
-                          } else {
-                            if (activeFilters.speakerName) removeFilter("speaker");
-                            setInput((prev) => `${s.tag} ${prev.trim()}`.trim() + " ");
-                          }
-                          setAppFilterOpen(false);
-                        }}
-                        className={cn(
-                          "w-full px-3 py-1.5 text-left text-xs font-mono hover:bg-muted/50 transition-colors flex items-center justify-between gap-2",
-                          isActive && "bg-muted"
-                        )}
-                      >
-                        <span>{s.tag}</span>
-                        <span className="text-[10px] text-muted-foreground">speaker</span>
-                      </button>
-                    );
-                  })}
-                </>
-              )}
-            </PopoverContent>
-          </Popover>
-          <div className="flex-1 min-w-0">
-            <AIPresetsSelector
-              onPresetChange={setActivePreset}
-              onPresetSaved={handlePiRestart}
-              controlledPresetId={activePipeExecution ? activePreset?.id : undefined}
-              onControlledSelect={activePipeExecution ? (id) => {
-                const match = settings.aiPresets?.find((p) => p.id === id);
-                if (match) setActivePreset(match);
-              } : undefined}
-              showLoginCta={false}
-            />
-          </div>
-        </div>
-
         <form
           onSubmit={handleSubmit}
-          className="p-3 relative"
+          className="px-3 pt-2 pb-1 relative"
           onPaste={handlePaste}
         >
           {/* Drop zone overlay — only shown in embedded (non-overlay) chat */}
@@ -3697,7 +3455,7 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.15 }}
-                  className="absolute inset-0 z-50 flex items-center justify-center bg-background/95 backdrop-blur-sm rounded-lg border-2 border-dashed border-primary m-1"
+                  className="absolute inset-0 z-50 flex items-center justify-center bg-background/95 backdrop-blur-sm rounded-2xl border-2 border-dashed border-primary m-1"
                 >
                   <div className="flex flex-col items-center gap-2">
                     <ImageIcon className="w-6 h-6 text-primary" />
@@ -3709,12 +3467,41 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
           )}
           <div
             className={cn(
-              "flex flex-col rounded-lg border bg-input ring-offset-background transition-colors focus-within:border-foreground focus-within:ring-foreground/10 focus-within:ring-1",
-              "bg-background/50 border-border/50",
+              "flex flex-col rounded-2xl border bg-background/50 ring-offset-background transition-colors focus-within:border-foreground/40 focus-within:ring-1 focus-within:ring-foreground/10",
+              "border-border/60",
               disabledReason && "border-muted-foreground/30"
             )}
           >
-            {/* Textarea row: full width so scrollbar is above the buttons and no dead zone */}
+            {/* Attached images — above the textarea, like Claude UI */}
+            {pastedImages.length > 0 && (
+              <div className="px-3 pt-3 flex flex-wrap items-center gap-2">
+                {pastedImages.map((img, i) => (
+                  <div key={i} className="relative group shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setImageViewer({ images: pastedImages, index: i })}
+                      className="block rounded-lg border border-border/50 shadow-sm overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={img}
+                        alt={`Attached ${i + 1}`}
+                        className="h-16 w-16 object-cover cursor-pointer"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setPastedImages(prev => prev.filter((_, idx) => idx !== i)); }}
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-foreground text-background rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Textarea row */}
             <div className="relative flex-1 min-w-0">
               <textarea
                 ref={inputRef}
@@ -3724,13 +3511,13 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
                 placeholder={
                   disabledReason
                     ? disabledReason
-                    : "Ask about your screen... (type @ for filters, paste images)"
+                    : "Ask about your screen... (type @ for filters)"
                 }
                 disabled={!canChat}
                 spellCheck={false}
                 autoCorrect="off"
                 rows={1}
-                className="w-full min-h-[44px] border-0 bg-transparent px-3 py-2.5 pr-3 text-sm font-mono placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 caret-foreground resize-none overflow-y-auto scrollbar-minimal"
+                className="w-full min-h-[52px] border-0 bg-transparent px-4 py-3.5 text-sm placeholder:text-muted-foreground/60 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 caret-foreground resize-none overflow-y-auto scrollbar-minimal"
                 style={{ maxHeight: "150px" }}
               />
 
@@ -3742,7 +3529,7 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 4 }}
                     transition={{ duration: 0.1 }}
-                    className="absolute bottom-full left-0 right-0 mb-1 bg-background border border-border rounded-lg shadow-lg overflow-hidden z-50 max-h-[240px] overflow-y-auto"
+                    className="absolute bottom-full left-0 right-0 mb-1 bg-background border border-border rounded-xl shadow-lg overflow-hidden z-50 max-h-[240px] overflow-y-auto"
                   >
                     {["time", "content", "app", "speaker"].map(category => {
                       const items = filteredMentions.filter(m => m.category === category);
@@ -3784,29 +3571,252 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
                 )}
               </AnimatePresence>
             </div>
-            {/* Buttons row below textarea so scrollbar is above and full width is typeable */}
-            <div className="flex items-center justify-end gap-0.5 shrink-0 px-2 pb-2 pt-1">
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                onClick={handleFilePicker}
-                disabled={isLoading || !canChat}
-                className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                title="Attach image"
-              >
-                <Paperclip className="h-4 w-4" />
-              </Button>
+
+            {/* Bottom row: + button | active filter badges | [spacer] | model selector | send */}
+            <div className="flex items-center gap-2 px-3 pb-3 pt-1">
+              {/* + button — opens file attach + filter options */}
+              <Popover open={appFilterOpen} onOpenChange={setAppFilterOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    title="Add files, filters, and more"
+                    className={cn(
+                      "h-8 w-8 rounded-full flex items-center justify-center shrink-0 transition-colors",
+                      hasActiveFilters
+                        ? "bg-foreground text-background"
+                        : "bg-muted/50 hover:bg-muted text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  className="w-64 p-0 rounded-xl overflow-hidden max-h-[320px] overflow-y-auto shadow-lg"
+                  align="start"
+                  side="top"
+                  sideOffset={6}
+                  avoidCollisions
+                >
+                  {/* Attach image */}
+                  <button
+                    type="button"
+                    onClick={() => { handleFilePicker(); setAppFilterOpen(false); }}
+                    disabled={isLoading || !canChat}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors text-foreground/80"
+                  >
+                    <Paperclip className="h-4 w-4 text-muted-foreground" />
+                    Add image or photo
+                  </button>
+
+                  <div className="border-t border-border/40 my-0.5" />
+
+                  {/* Time filters */}
+                  <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    time
+                  </div>
+                  {STATIC_MENTION_SUGGESTIONS.filter((s) => s.category === "time").map((s) => {
+                    const isActive = activeFilters.timeRanges.some((r) => r.label === s.description);
+                    return (
+                      <button
+                        key={s.tag}
+                        type="button"
+                        onClick={() => {
+                          if (isActive) {
+                            removeFilter("time", s.description);
+                          } else {
+                            setInput((prev) => `${s.tag} ${prev.trim()}`.trim() + " ");
+                          }
+                          setAppFilterOpen(false);
+                        }}
+                        className={cn(
+                          "w-full px-3 py-1.5 text-left text-xs font-mono hover:bg-muted/50 transition-colors flex items-center justify-between gap-2",
+                          isActive && "bg-muted"
+                        )}
+                      >
+                        <span>{s.tag}</span>
+                        <span className="text-[10px] text-muted-foreground">{s.description}</span>
+                      </button>
+                    );
+                  })}
+
+                  {/* Content type filters */}
+                  <div className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground border-t border-border/30 mt-1">
+                    content type
+                  </div>
+                  {STATIC_MENTION_SUGGESTIONS.filter((s) => s.category === "content").map((s) => {
+                    const contentTypeMap: Record<string, string> = { screen: "screen", audio: "audio", input: "input" };
+                    const tagName = s.tag.slice(1);
+                    const isActive = activeFilters.contentType === (contentTypeMap[tagName] || tagName);
+                    return (
+                      <button
+                        key={s.tag}
+                        type="button"
+                        onClick={() => {
+                          if (isActive) {
+                            removeFilter("content");
+                          } else {
+                            if (activeFilters.contentType) removeFilter("content");
+                            setInput((prev) => `${s.tag} ${prev.trim()}`.trim() + " ");
+                          }
+                          setAppFilterOpen(false);
+                        }}
+                        className={cn(
+                          "w-full px-3 py-1.5 text-left text-xs font-mono hover:bg-muted/50 transition-colors flex items-center justify-between gap-2",
+                          isActive && "bg-muted"
+                        )}
+                      >
+                        <span>{s.tag}</span>
+                        <span className="text-[10px] text-muted-foreground">{s.description}</span>
+                      </button>
+                    );
+                  })}
+
+                  {/* App filters */}
+                  <div className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground border-t border-border/30 mt-1">
+                    apps
+                  </div>
+                  {appMentionSuggestions.length === 0 ? (
+                    <div className="px-3 py-2 text-[10px] text-muted-foreground">no apps detected yet</div>
+                  ) : (
+                    appMentionSuggestions.map((suggestion) => {
+                      const isActive = activeFilters.appName === suggestion.appName;
+                      return (
+                        <button
+                          key={`app-${suggestion.tag}`}
+                          type="button"
+                          onClick={() => {
+                            if (isActive) {
+                              removeFilter("app");
+                            } else {
+                              if (activeFilters.appName) removeFilter("app");
+                              setInput((prev) => `${suggestion.tag} ${prev.trim()}`.trim() + " ");
+                            }
+                            setAppFilterOpen(false);
+                          }}
+                          className={cn(
+                            "w-full px-3 py-1.5 text-left text-xs font-mono hover:bg-muted/50 transition-colors flex items-center justify-between gap-2",
+                            isActive && "bg-muted"
+                          )}
+                        >
+                          <span>{suggestion.tag}</span>
+                          <span className="text-[10px] text-muted-foreground truncate">{suggestion.description}</span>
+                        </button>
+                      );
+                    })
+                  )}
+
+                  {/* Speakers */}
+                  {recentSpeakers.length > 0 && (
+                    <>
+                      <div className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground border-t border-border/30 mt-1">
+                        speakers
+                      </div>
+                      {recentSpeakers.map((s) => {
+                        const speakerName = s.tag.startsWith('@"') ? s.tag.slice(2, -1) : s.tag.slice(1);
+                        const isActive = activeFilters.speakerName === speakerName;
+                        return (
+                          <button
+                            key={`speaker-${s.tag}`}
+                            type="button"
+                            onClick={() => {
+                              if (isActive) {
+                                removeFilter("speaker");
+                              } else {
+                                if (activeFilters.speakerName) removeFilter("speaker");
+                                setInput((prev) => `${s.tag} ${prev.trim()}`.trim() + " ");
+                              }
+                              setAppFilterOpen(false);
+                            }}
+                            className={cn(
+                              "w-full px-3 py-1.5 text-left text-xs font-mono hover:bg-muted/50 transition-colors flex items-center justify-between gap-2",
+                              isActive && "bg-muted"
+                            )}
+                          >
+                            <span>{s.tag}</span>
+                            <span className="text-[10px] text-muted-foreground">speaker</span>
+                          </button>
+                        );
+                      })}
+                    </>
+                  )}
+                </PopoverContent>
+              </Popover>
+
+              {/* Active filter badges inline */}
+              {hasActiveFilters && (
+                <div className="flex items-center gap-1 flex-wrap">
+                  {activeFilters.timeRanges.map((range, idx) => (
+                    <button
+                      key={`time-${idx}`}
+                      type="button"
+                      onClick={() => removeFilter("time", range.label)}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 rounded-full hover:bg-blue-500/20 transition-colors"
+                    >
+                      <span>{range.label}</span>
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  ))}
+                  {activeFilters.contentType && (
+                    <button
+                      type="button"
+                      onClick={() => removeFilter("content")}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 rounded-full hover:bg-purple-500/20 transition-colors"
+                    >
+                      <span>{activeFilters.contentType}</span>
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  )}
+                  {activeFilters.appName && (
+                    <button
+                      type="button"
+                      onClick={() => removeFilter("app")}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium bg-green-500/10 text-green-600 dark:text-green-400 border border-green-500/20 rounded-full hover:bg-green-500/20 transition-colors"
+                    >
+                      <span>{activeFilters.appName}</span>
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  )}
+                  {activeFilters.speakerName && (
+                    <button
+                      type="button"
+                      onClick={() => removeFilter("speaker")}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium bg-orange-500/10 text-orange-600 dark:text-orange-400 border border-orange-500/20 rounded-full hover:bg-orange-500/20 transition-colors"
+                    >
+                      <span>{activeFilters.speakerName}</span>
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="flex-1" />
+
+              {/* Model selector */}
+              <div className="w-52 shrink-0">
+                <AIPresetsSelector
+                  compact
+                  onPresetChange={setActivePreset}
+                  onPresetSaved={handlePiRestart}
+                  controlledPresetId={activePipeExecution ? activePreset?.id : undefined}
+                  onControlledSelect={activePipeExecution ? (id) => {
+                    const match = settings.aiPresets?.find((p) => p.id === id);
+                    if (match) setActivePreset(match);
+                  } : undefined}
+                  showLoginCta={false}
+                />
+              </div>
+
+              {/* Send / Stop button */}
               <Button
                 type={isStreaming ? "button" : "submit"}
                 size="icon"
                 disabled={(!input.trim() && !isStreaming && pastedImages.length === 0) || !canChat}
                 onClick={isStreaming ? handleStop : undefined}
                 className={cn(
-                  "h-8 w-8 transition-all duration-200",
+                  "h-8 w-8 rounded-full shrink-0 transition-all duration-200",
                   isStreaming
                     ? "bg-foreground text-background hover:bg-foreground/80"
-                    : "bg-foreground text-background hover:bg-background hover:text-foreground"
+                    : "bg-foreground text-background hover:bg-foreground/80"
                 )}
               >
                 {isStreaming ? (
@@ -3818,8 +3828,19 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
             </div>
           </div>
         </form>
-      </div> {/* End of max-w-4xl input wrapper */}
-      </div>
+
+        {/* Quick action pills — only shown on empty state */}
+        {isEmpty && (
+          <QuickActionPills
+            onSendMessage={sendMessage}
+            customTemplates={customTemplates}
+            onSaveCustomTemplate={saveCustomTemplate}
+            onDeleteCustomTemplate={deleteCustomTemplate}
+            templatePipes={templatePipes}
+          />
+        )}
+        </div> {/* End of w-full/max-w wrapper */}
+      </div> {/* End of input section */}
 
 
       {scheduleDialogMessage && (

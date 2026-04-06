@@ -1329,13 +1329,15 @@ export const AIPresetsSelector = ({
             <Tooltip>
               <PopoverTrigger asChild>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   role="combobox"
                   aria-expanded={open}
                   className={cn(
-                    "w-full justify-between hover:bg-accent hover:text-accent-foreground",
-                    compact && "h-8 text-xs",
-                    selectedPresetRequiresLogin && "border-amber-500/50"
+                    "w-full justify-between",
+                    compact
+                      ? "h-8 text-xs rounded-lg border-transparent bg-transparent text-foreground font-normal normal-case tracking-normal hover:border-border/40 hover:bg-muted/40 hover:shadow-sm transition-all duration-150"
+                      : "border-foreground bg-background hover:bg-foreground hover:text-background",
+                    selectedPresetRequiresLogin && !compact && "border-amber-500/50"
                   )}
                 >
                   {selectedPreset ? (
@@ -1352,22 +1354,25 @@ export const AIPresetsSelector = ({
                           )}
                         </span>
                       </div>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0 flex-1 justify-end overflow-hidden">
-                        <span className="rounded bg-muted px-1.5 py-0.5 whitespace-nowrap shrink-0">
-                          {
-                            aiPresets.find(
-                              (preset) => preset.id === selectedPreset,
-                            )?.provider
-                          }
-                        </span>
-                        <span className="hidden sm:block truncate min-w-0" title={aiPresets.find((p) => p.id === selectedPreset)?.model}>
-                          {
-                            aiPresets.find(
-                              (preset) => preset.id === selectedPreset,
-                            )?.model
-                          }
-                        </span>
-                      </div>
+                      {/* Hide provider/model detail in compact mode — preset name is sufficient */}
+                      {!compact && (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0 flex-1 justify-end overflow-hidden">
+                          <span className="rounded bg-muted px-1.5 py-0.5 whitespace-nowrap shrink-0">
+                            {
+                              aiPresets.find(
+                                (preset) => preset.id === selectedPreset,
+                              )?.provider
+                            }
+                          </span>
+                          <span className="hidden sm:block truncate min-w-0" title={aiPresets.find((p) => p.id === selectedPreset)?.model}>
+                            {
+                              aiPresets.find(
+                                (preset) => preset.id === selectedPreset,
+                              )?.model
+                            }
+                          </span>
+                        </div>
+                      )}
                     </div>
                   ) : allowNone && isControlled ? (
                     <span className="text-muted-foreground">{noneLabel}</span>
@@ -1394,7 +1399,7 @@ export const AIPresetsSelector = ({
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
-          <PopoverContent side="top" sideOffset={6} className="min-w-[500px] w-[--radix-popover-trigger-width] p-0">
+          <PopoverContent side="bottom" sideOffset={6} avoidCollisions className="min-w-[500px] w-[--radix-popover-trigger-width] p-0">
             <Command>
               <CommandInput placeholder="search presets..." />
               <CommandList>
