@@ -939,6 +939,7 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
   const [openConvMenuId, setOpenConvMenuId] = useState<string | null>(null);
   const [renamingConvId, setRenamingConvId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [deletingConvId, setDeletingConvId] = useState<string | null>(null);
   const [activePreset, setActivePreset] = useState<AIPreset | undefined>();
   const [showMentionDropdown, setShowMentionDropdown] = useState(false);
   const [mentionFilter, setMentionFilter] = useState("");
@@ -3112,7 +3113,7 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setOpenConvMenuId(null);
-                                  deleteConversation(conv.id);
+                                  setDeletingConvId(conv.id);
                                 }}
                               >
                                 <Trash2 className="h-3.5 w-3.5 shrink-0" />
@@ -3987,6 +3988,30 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
               </div>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete chat confirmation dialog */}
+      <Dialog open={!!deletingConvId} onOpenChange={(open) => !open && setDeletingConvId(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete chat</DialogTitle>
+            <p className="text-sm text-muted-foreground">Are you sure you want to delete this chat?</p>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeletingConvId(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                deleteConversation(deletingConvId!);
+                setDeletingConvId(null);
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
