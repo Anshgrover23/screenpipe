@@ -119,17 +119,14 @@ export function QuickActionPills({
   templatePipes = [],
 }: QuickActionPillsProps) {
   const [activePill, setActivePill] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
   const [showBuilder, setShowBuilder] = useState(false);
 
   const templates = templatePipes.length > 0 ? templatePipes : FALLBACK_TEMPLATES;
   const featured = templates.filter((t) => t.featured);
-  const discover = templates.filter((t) => !t.featured);
 
   const getSubOptions = (name: string) => PILL_SUB_OPTIONS[name] ?? null;
 
   const handlePillClick = (pipe: TemplatePipe) => {
-    if (showAll) setShowAll(false);
     const subOptions = getSubOptions(pipe.name);
     if (subOptions) {
       setActivePill(activePill === pipe.name ? null : pipe.name);
@@ -138,9 +135,7 @@ export function QuickActionPills({
     }
   };
 
-  const activePipeData = activePill
-    ? [...featured, ...discover].find((t) => t.name === activePill)
-    : null;
+  const activePipeData = activePill ? featured.find((t) => t.name === activePill) : null;
   const activeSubOptions = activePill ? getSubOptions(activePill) : null;
 
   return (
@@ -154,7 +149,7 @@ export function QuickActionPills({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 6, scale: 0.98 }}
             transition={{ duration: 0.15 }}
-            className="mb-2 rounded-xl border border-border/60 bg-background shadow-md overflow-hidden"
+            className="mb-2 rounded-none border border-border/60 bg-background shadow-md overflow-hidden"
           >
             <div className="flex items-center justify-between px-4 py-2 border-b border-border/30">
               <span className="text-xs font-medium flex items-center gap-1.5 text-foreground/80">
@@ -164,7 +159,7 @@ export function QuickActionPills({
               <button
                 type="button"
                 onClick={() => setActivePill(null)}
-                className="p-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                className="p-1 rounded-none hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
               >
                 <X className="h-3 w-3" />
               </button>
@@ -188,79 +183,6 @@ export function QuickActionPills({
         )}
       </AnimatePresence>
 
-      {/* Discover expanded panel */}
-      <AnimatePresence>
-        {showAll && (
-          <motion.div
-            key="discover"
-            initial={{ opacity: 0, y: 6, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 6, scale: 0.98 }}
-            transition={{ duration: 0.15 }}
-            className="mb-2 rounded-xl border border-border/60 bg-background shadow-md overflow-hidden"
-          >
-            <div className="flex items-center justify-between px-4 py-2 border-b border-border/30">
-              <span className="text-xs font-medium text-foreground/80">More templates</span>
-              <button
-                type="button"
-                onClick={() => setShowAll(false)}
-                className="p-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-            <div className="divide-y divide-border/20">
-              {discover.map((pipe) => (
-                <button
-                  key={pipe.name}
-                  type="button"
-                  onClick={() => {
-                    setShowAll(false);
-                    onSendMessage(pipe.prompt, `${pipe.icon} ${pipe.title}`);
-                  }}
-                  className="w-full text-left px-4 py-2.5 flex items-start gap-3 hover:bg-muted/40 transition-colors"
-                >
-                  <span className="text-base mt-0.5">{pipe.icon}</span>
-                  <div>
-                    <div className="text-sm font-medium text-foreground/80">{pipe.title}</div>
-                    <div className="text-[11px] text-muted-foreground mt-0.5">{pipe.description}</div>
-                  </div>
-                </button>
-              ))}
-              {/* User's custom templates in discover */}
-              {customTemplates.map((ct) => (
-                <div key={ct.id} className="flex items-center group">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAll(false);
-                      onSendMessage(ct.prompt, `📌 ${ct.title}`);
-                    }}
-                    className="flex-1 text-left px-4 py-2.5 flex items-start gap-3 hover:bg-muted/40 transition-colors"
-                  >
-                    <span className="text-base mt-0.5">📌</span>
-                    <div>
-                      <div className="text-sm font-medium text-foreground/80">{ct.title}</div>
-                      <div className="text-[11px] text-muted-foreground mt-0.5">
-                        {ct.description || ct.timeRange}
-                      </div>
-                    </div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onDeleteCustomTemplate(ct.id)}
-                    className="pr-4 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all"
-                    title="Delete"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Featured pills row */}
       <div className="flex flex-wrap items-center gap-1.5">
         {featured.map((pipe) => (
@@ -269,7 +191,7 @@ export function QuickActionPills({
             type="button"
             onClick={() => handlePillClick(pipe)}
             className={cn(
-              "inline-flex items-center px-3 py-1.5 rounded-full text-[12px] font-medium border transition-all duration-150 cursor-pointer",
+              "inline-flex items-center px-3 py-1.5 rounded-none text-[12px] font-medium border transition-all duration-150 cursor-pointer",
               activePill === pipe.name
                 ? "bg-foreground text-background border-foreground"
                 : "bg-muted/20 text-muted-foreground hover:text-foreground border-border/40 hover:border-foreground/40 hover:bg-muted/40"
@@ -282,27 +204,11 @@ export function QuickActionPills({
         {/* Custom Summary pill */}
         <button
           type="button"
-          onClick={() => { setActivePill(null); setShowAll(false); setShowBuilder(true); }}
-          className="inline-flex items-center px-3 py-1.5 rounded-full text-[12px] font-medium border border-dashed border-border/40 bg-muted/10 text-muted-foreground hover:text-foreground hover:border-foreground/40 hover:bg-muted/40 transition-all duration-150 cursor-pointer"
+          onClick={() => { setActivePill(null); setShowBuilder(true); }}
+          className="inline-flex items-center px-3 py-1.5 rounded-none text-[12px] font-medium border border-dashed border-border/40 bg-muted/10 text-muted-foreground hover:text-foreground hover:border-foreground/40 hover:bg-muted/40 transition-all duration-150 cursor-pointer"
         >
           Custom Summary
         </button>
-
-        {/* Discover pill */}
-        {(discover.length > 0 || customTemplates.length > 0) && (
-          <button
-            type="button"
-            onClick={() => { setActivePill(null); setShowAll(!showAll); }}
-            className={cn(
-              "inline-flex items-center px-3 py-1.5 rounded-full text-[12px] font-medium border transition-all duration-150 cursor-pointer",
-              showAll
-                ? "bg-foreground text-background border-foreground"
-                : "bg-muted/10 text-muted-foreground border-border/40 hover:text-foreground hover:border-foreground/40 hover:bg-muted/40"
-            )}
-          >
-            {showAll ? "Hide" : `+${discover.length + customTemplates.length} more`}
-          </button>
-        )}
       </div>
 
 

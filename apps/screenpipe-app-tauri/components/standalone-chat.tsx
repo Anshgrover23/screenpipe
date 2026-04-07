@@ -48,6 +48,7 @@ import { useAutoSuggestions } from "@/lib/hooks/use-auto-suggestions";
 import { QuickActionPills } from "@/components/chat/quick-action-pills";
 import { type CustomTemplate } from "@/lib/summary-templates";
 import { usePipes } from "@/lib/hooks/use-pipes";
+import { IntegrationIcon } from "@/components/settings/connections-section";
 
 const SCREENPIPE_API = "http://localhost:3030";
 // Session ID is per-conversation — set on mount (new conv) and updated on load/new.
@@ -3467,7 +3468,8 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
           )}
           <div
             className={cn(
-              "flex flex-col rounded-2xl border bg-background/50 ring-offset-background transition-colors focus-within:border-foreground/40 focus-within:ring-1 focus-within:ring-foreground/10",
+              "flex flex-col border bg-background/50 ring-offset-background transition-colors focus-within:border-foreground/40 focus-within:ring-1 focus-within:ring-foreground/10 overflow-hidden",
+              "rounded-none",
               "border-border/60",
               disabledReason && "border-muted-foreground/30"
             )}
@@ -3591,7 +3593,7 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
                   </button>
                 </PopoverTrigger>
                 <PopoverContent
-                  className="w-64 p-0 rounded-xl overflow-hidden max-h-[320px] overflow-y-auto shadow-lg"
+                  className="w-64 p-0 rounded-none overflow-hidden max-h-[320px] overflow-y-auto shadow-lg"
                   align="start"
                   side="top"
                   sideOffset={6}
@@ -3792,7 +3794,7 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
               <div className="flex-1" />
 
               {/* Model selector */}
-              <div className="w-52 shrink-0">
+              <div className="w-44 shrink-0">
                 <AIPresetsSelector
                   compact
                   onPresetChange={setActivePreset}
@@ -3826,6 +3828,31 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
                 )}
               </Button>
             </div>
+
+            {/* Connect your tools — attached bottom of chatbox, only on empty state */}
+            {isEmpty && (
+              <button
+                type="button"
+                onClick={async () => {
+                  await commands.showWindow({ Home: { page: "connections" } });
+                }}
+                className="w-full flex items-center gap-3 px-4 py-2.5 border-t border-border/40 hover:bg-muted/20 transition-colors duration-150 group rounded-b-none"
+              >
+                <span className="text-xs text-muted-foreground flex-1 text-left">Connect your tools to screenpipe</span>
+                <div className="flex items-center pr-0.5">
+                  {["notion", "slack", "discord", "github", "claude", "google-calendar", "telegram"].map((key, i) => (
+                    <span
+                      key={key}
+                      className="w-5 h-5 shrink-0 rounded-[4px] bg-black border border-black/70 p-[1px] ring-1 ring-background/70 shadow-sm [&>*]:w-full [&>*]:h-full [&>img]:rounded-[2px] [&>svg]:rounded-[2px]"
+                      style={{ marginLeft: i === 0 ? 0 : "-6px", zIndex: 20 - i }}
+                    >
+                      <IntegrationIcon icon={key} />
+                    </span>
+                  ))}
+                </div>
+                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground transition-colors shrink-0 ml-2" />
+              </button>
+            )}
           </div>
         </form>
 
