@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useSettings, ChatMessage, ChatConversation } from "@/lib/hooks/use-settings";
 import { cn } from "@/lib/utils";
-import { Loader2, Send, Square, User, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, Filter, RefreshCw } from "lucide-react";
+import { Loader2, Send, Square, User, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, Filter, RefreshCw, GitBranch, MoreHorizontal } from "lucide-react";
 import { SchedulePromptDialog } from "@/components/chat/schedule-prompt-dialog";
 import { toast } from "@/components/ui/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
@@ -935,6 +935,7 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamedCharCount, setStreamedCharCount] = useState(0);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [openMessageMenuId, setOpenMessageMenuId] = useState<string | null>(null);
   const [activePreset, setActivePreset] = useState<AIPreset | undefined>();
   const [showMentionDropdown, setShowMentionDropdown] = useState(false);
   const [mentionFilter, setMentionFilter] = useState("");
@@ -1044,6 +1045,7 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
     loadConversation,
     deleteConversation,
     startNewConversation,
+    branchConversation,
   } = useChatConversations({
     messages,
     setMessages,
@@ -3253,6 +3255,27 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
                       <Copy className="h-3 w-3" />
                     )}
                   </button>
+                  {message.role === "assistant" && !isLoading && (
+                    <button
+                      onClick={() => {
+                        const msgIndex = messages.findIndex((m) => m.id === message.id);
+                        // Find the preceding user message index
+                        let userMsgIndex = -1;
+                        for (let i = msgIndex - 1; i >= 0; i--) {
+                          if (messages[i].role === "user") { userMsgIndex = i; break; }
+                        }
+                        if (userMsgIndex === -1) return;
+                        const userMsg = messages[userMsgIndex];
+                        // Remove user message and everything after it, then resend
+                        setMessages((prev) => prev.slice(0, userMsgIndex));
+                        sendMessage(userMsg.content, userMsg.displayContent);
+                      }}
+                      className="p-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
+                      title="Retry"
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                    </button>
+                  )}
                   {message.role === "assistant" && !message.content.includes("used all your free queries") && !message.content.startsWith("Error") && message.content !== "Processing..." && (
                     <button
                       onClick={() => {
@@ -3271,6 +3294,36 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
                     >
                       <Clock className="h-3 w-3" />
                     </button>
+                  )}
+                  {message.role === "assistant" && (
+                    <Popover
+                      open={openMessageMenuId === message.id}
+                      onOpenChange={(open) => setOpenMessageMenuId(open ? message.id : null)}
+                    >
+                      <PopoverTrigger asChild>
+                        <button
+                          className="p-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
+                          title="More options"
+                        >
+                          <MoreHorizontal className="h-3 w-3" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-48 p-1" align="end" side="top">
+                        <div className="text-xs text-muted-foreground px-2 py-1 mb-1">
+                          {new Date(message.timestamp).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        </div>
+                        <button
+                          onClick={() => {
+                            setOpenMessageMenuId(null);
+                            branchConversation(message.id);
+                          }}
+                          className="w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md hover:bg-muted text-left"
+                        >
+                          <GitBranch className="h-3.5 w-3.5 shrink-0" />
+                          Branch in new chat
+                        </button>
+                      </PopoverContent>
+                    </Popover>
                   )}
                 </div>
               </div>
