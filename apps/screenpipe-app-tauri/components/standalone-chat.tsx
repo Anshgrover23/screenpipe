@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useSettings, ChatMessage, ChatConversation } from "@/lib/hooks/use-settings";
 import { cn } from "@/lib/utils";
-import { Loader2, Send, Square, User, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, Filter, RefreshCw, GitBranch, MoreHorizontal } from "lucide-react";
+import { Loader2, Send, Square, User, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, Filter, RefreshCw, GitBranch, MoreHorizontal, Pencil } from "lucide-react";
 import { SchedulePromptDialog } from "@/components/chat/schedule-prompt-dialog";
 import { toast } from "@/components/ui/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
@@ -37,7 +37,7 @@ import { usePlatform } from "@/lib/hooks/use-platform";
 import { useSqlAutocomplete } from "@/lib/hooks/use-sql-autocomplete";
 import { homeDir, join } from "@tauri-apps/api/path";
 import { useTimelineStore } from "@/lib/hooks/use-timeline-store";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import {
   parseMentions,
   buildAppMentionSuggestions,
@@ -936,6 +936,9 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
   const [streamedCharCount, setStreamedCharCount] = useState(0);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [openMessageMenuId, setOpenMessageMenuId] = useState<string | null>(null);
+  const [openConvMenuId, setOpenConvMenuId] = useState<string | null>(null);
+  const [renamingConvId, setRenamingConvId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const [activePreset, setActivePreset] = useState<AIPreset | undefined>();
   const [showMentionDropdown, setShowMentionDropdown] = useState(false);
   const [mentionFilter, setMentionFilter] = useState("");
@@ -1044,6 +1047,7 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
     saveConversation,
     loadConversation,
     deleteConversation,
+    renameConversation,
     startNewConversation,
     branchConversation,
   } = useChatConversations({
@@ -3075,17 +3079,47 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
                               {conv.messages.length} messages
                             </p>
                           </div>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deleteConversation(conv.id);
-                            }}
-                            className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                          <Popover
+                            open={openConvMenuId === conv.id}
+                            onOpenChange={(open) => setOpenConvMenuId(open ? conv.id : null)}
                           >
-                            <Trash2 size={12} />
-                          </Button>
+                            <PopoverTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => e.stopPropagation()}
+                                className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
+                              >
+                                <MoreHorizontal size={12} />
+                              </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-40 p-1" align="end" side="right">
+                              <button
+                                className="w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md hover:bg-muted text-left"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenConvMenuId(null);
+                                  setRenameValue(conv.title);
+                                  setRenamingConvId(conv.id);
+                                }}
+                              >
+                                <Pencil className="h-3.5 w-3.5 shrink-0" />
+                                Rename
+                              </button>
+                              <div className="my-1 border-t border-border" />
+                              <button
+                                className="w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md hover:bg-muted text-destructive text-left"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenConvMenuId(null);
+                                  deleteConversation(conv.id);
+                                }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                                Delete
+                              </button>
+                            </PopoverContent>
+                          </Popover>
                         </div>
                       ))}
                     </div>
@@ -3953,6 +3987,42 @@ export function StandaloneChat({ className }: { className?: string } = {}) {
               </div>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Rename chat dialog */}
+      <Dialog open={!!renamingConvId} onOpenChange={(open) => !open && setRenamingConvId(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Rename chat</DialogTitle>
+          </DialogHeader>
+          <input
+            autoFocus
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                renameConversation(renamingConvId!, renameValue);
+                setRenamingConvId(null);
+              } else if (e.key === "Escape") {
+                setRenamingConvId(null);
+              }
+            }}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenamingConvId(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                renameConversation(renamingConvId!, renameValue);
+                setRenamingConvId(null);
+              }}
+            >
+              Save
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

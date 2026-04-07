@@ -232,6 +232,17 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoading, messages]);
 
+  // ---- renameConversation ----
+  const renameConversation = async (convId: string, newTitle: string) => {
+    const trimmed = newTitle.trim();
+    if (!trimmed) return;
+    const { loadConversationFile } = await import("@/lib/chat-storage");
+    const conv = await loadConversationFile(convId);
+    if (!conv) return;
+    await saveConversationFile({ ...conv, title: trimmed, updatedAt: Date.now() });
+    await refreshFileConversations();
+  };
+
   // ---- deleteConversation ----
   const deleteConversation = async (convId: string) => {
     await deleteConversationFile(convId);
@@ -471,6 +482,7 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     saveConversation,
     loadConversation,
     deleteConversation,
+    renameConversation,
     startNewConversation,
     branchConversation,
   };
