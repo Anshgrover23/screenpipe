@@ -212,8 +212,10 @@ export function MemoriesSection() {
 
   const fetchPage = useCallback(
     async (offset: number, append: boolean) => {
-      if (offset === 0) setLoading(true);
-      else {
+      if (offset === 0) {
+        setLoading(true);
+        setExpandedIds(new Set());
+      } else {
         setLoadingMore(true);
         loadingMoreRef.current = true;
       }
