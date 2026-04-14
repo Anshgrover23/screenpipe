@@ -284,6 +284,15 @@ fn spawn_retention_loop(
                 retention_days
             );
 
+            // Mark cleanup as started so the UI shows activity immediately
+            {
+                let mut guard = state.write().await;
+                if let Some(rt) = guard.as_mut() {
+                    rt.last_cleanup = Some(Utc::now());
+                    rt.last_error = None;
+                }
+            }
+
             match do_local_cleanup(&db, cutoff).await {
                 Ok(deleted) => {
                     if deleted > 0 {
@@ -387,10 +396,12 @@ async fn do_local_cleanup(db: &Arc<DatabaseManager>, cutoff: DateTime<Utc>) -> a
         if let Err(e) = db.cleanup_orphaned_chunks().await {
             warn!("retention: orphan chunk cleanup failed: {}", e);
         }
-        // Reclaim disk space — without VACUUM, SQLite keeps deleted pages
-        info!("retention: running incremental vacuum to reclaim disk space");
-        if let Err(e) = db.execute_raw_sql("PRAGMA incremental_vacuum(1000)").await {
-            warn!("retention: incremental vacuum failed: {}", e);
+        // Reclaim disk space — VACUUM rewrites the DB file and shrinks it.
+        // PRAGMA incremental_vacuum requires auto_vacuum=INCREMENTAL (not set),
+        // so it would be a silent no-op. Full VACUUM is the correct approach.
+        info!("retention: running vacuum to reclaim disk space");
+        if let Err(e) = db.vacuum().await {
+            warn!("retention: vacuum failed: {}", e);
         }
     }
 

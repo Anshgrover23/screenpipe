@@ -57,7 +57,11 @@ function formatRelativeTime(isoString: string): string {
   return `${diffDays}d ago`;
 }
 
-export function RetentionSettings() {
+interface RetentionSettingsProps {
+  onCleanupComplete?: () => void;
+}
+
+export function RetentionSettings({ onCleanupComplete }: RetentionSettingsProps) {
   const { settings, updateSettings } = useSettings();
   const { toast } = useToast();
   const [status, setStatus] = useState<RetentionStatus | null>(null);
@@ -175,8 +179,15 @@ export function RetentionSettings() {
         throw new Error(err.error || "failed to trigger cleanup");
       }
       toast({ title: "cleanup triggered" });
-      // poll status after a short delay
-      setTimeout(fetchStatus, 3000);
+      // Poll retention status + disk usage every 4s for up to 2 minutes
+      // so both sections update automatically as batches complete
+      let polls = 0;
+      const pollId = setInterval(async () => {
+        await fetchStatus();
+        onCleanupComplete?.();
+        polls++;
+        if (polls >= 30) clearInterval(pollId);
+      }, 4000);
     } catch (e: any) {
       toast({
         title: "failed to trigger cleanup",

@@ -4986,6 +4986,17 @@ impl DatabaseManager {
         Ok((video_chunks_deleted, audio_chunks_deleted))
     }
 
+    /// Run a full VACUUM to reclaim disk space after bulk deletions.
+    /// Uses the write pool because VACUUM needs exclusive DB access.
+    /// This is the correct way to shrink the SQLite file after retention cleanup —
+    /// `PRAGMA incremental_vacuum` requires `auto_vacuum=INCREMENTAL` which is not set.
+    pub async fn vacuum(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("VACUUM")
+            .execute(&self.write_pool)
+            .await?;
+        Ok(())
+    }
+
     /// Returns the oldest timestamp across frames and audio_transcriptions.
     /// Used by retention to avoid scanning from epoch.
     pub async fn get_oldest_timestamp(&self) -> Result<Option<DateTime<Utc>>, sqlx::Error> {

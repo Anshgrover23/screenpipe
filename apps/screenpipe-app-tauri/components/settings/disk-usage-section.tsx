@@ -208,7 +208,7 @@ export function DiskUsageSection() {
         </CardContent>
       </Card>
 
-      <RetentionSettings />
+      <RetentionSettings onCleanupComplete={refetch} />
     </div>
   );
 } 
