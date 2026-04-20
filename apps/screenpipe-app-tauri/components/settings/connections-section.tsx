@@ -1018,6 +1018,8 @@ function OAuthPanel({ integrationId, integrationName }: { integrationId: string;
   const isPro = !!settings.user?.cloud_subscribed;
   const [status, setStatus] = useState<"idle" | "loading" | "connected">("idle");
   const [displayName, setDisplayName] = useState<string | null>(null);
+  // Ref guard so a cancelled or timed-out connect attempt doesn't update state after cancel.
+  const connectingRef = React.useRef(false);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -1042,17 +1044,27 @@ function OAuthPanel({ integrationId, integrationName }: { integrationId: string;
 
   const handleConnect = async () => {
     setStatus("loading");
+    connectingRef.current = true;
     try {
       const res = await commands.oauthConnect(integrationId, null);
       if (res.status === "ok" && res.data.connected) {
+        // always reflect a successful connection, even if user hit cancel
         setStatus("connected");
         await fetchStatus();
-      } else {
+      } else if (connectingRef.current) {
         setStatus("idle");
       }
+      // if cancelled and not connected: handleCancel already set idle, leave it
     } catch {
-      setStatus("idle");
+      if (connectingRef.current) setStatus("idle");
+    } finally {
+      connectingRef.current = false;
     }
+  };
+
+  const handleCancel = () => {
+    connectingRef.current = false;
+    setStatus("idle");
   };
 
   const handleDisconnect = async () => {
@@ -1083,11 +1095,18 @@ function OAuthPanel({ integrationId, integrationName }: { integrationId: string;
               upgrade to pro to connect
             </button>
           </div>
+        ) : status === "loading" ? (
+          <div className="flex gap-2 items-center">
+            <Button disabled size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal whitespace-nowrap">
+              <Loader2 className="h-3 w-3 animate-spin" />connecting...
+            </Button>
+            <Button onClick={handleCancel} variant="outline" size="sm" className="h-7 text-xs normal-case font-sans tracking-normal">
+              cancel
+            </Button>
+          </div>
         ) : (
-          <Button onClick={handleConnect} disabled={status === "loading"} size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal whitespace-nowrap">
-            {status === "loading"
-              ? (<><Loader2 className="h-3 w-3 animate-spin" />connecting...</>)
-              : (<><LogIn className="h-3 w-3" />connect with {integrationName}</>)}
+          <Button onClick={handleConnect} size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal whitespace-nowrap">
+            <LogIn className="h-3 w-3" />connect with {integrationName}
           </Button>
         )}
       </div>
