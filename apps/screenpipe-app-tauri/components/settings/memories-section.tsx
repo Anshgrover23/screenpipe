@@ -268,6 +268,28 @@ export function MemoriesSection() {
     fetchPage(0, false);
   }, [sortField, sortDir]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Separate state for the newest memory timestamp — used only for the stale warning.
+  // Kept outside fetchPage so the background poll can update it without resetting the list.
+  const [newestCreatedAt, setNewestCreatedAt] = useState<string | null>(null);
+  const [bgTotal, setBgTotal] = useState<number | null>(null);
+
+  // Silent background check every 30s — fetches only 1 record to detect new memories.
+  // Updates the stale-warning state without touching the displayed list or showing a spinner.
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const res = await localFetch("/memories?limit=1&order_by=created_at&order_dir=desc");
+        if (!res.ok) return;
+        const data: MemoryListResponse = await res.json();
+        setBgTotal(data.pagination.total);
+        if (data.data[0]) setNewestCreatedAt(data.data[0].created_at);
+      } catch {}
+    };
+    check();
+    const id = setInterval(check, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   // infinite scroll via IntersectionObserver
   useEffect(() => {
     const sentinel = sentinelRef.current;
@@ -420,19 +442,12 @@ export function MemoriesSection() {
     }
   };
 
-  // Show a stale warning when no filter is active and the newest memory is >24h old
-  const newestMemory =
-    !loading &&
-    memories.length > 0 &&
-    !debouncedQuery &&
-    !activeTag &&
-    sortField === "created_at" &&
-    sortDir === "desc"
-      ? memories[0]
-      : null;
-  const staleDays = newestMemory
-    ? Math.floor((Date.now() - new Date(newestMemory.created_at).getTime()) / 86400000)
-    : 0;
+  // Stale warning: use the background-polled newest timestamp so it auto-clears
+  // without disrupting the displayed list.
+  const staleDays =
+    newestCreatedAt && (bgTotal ?? total) > 0
+      ? Math.floor((Date.now() - new Date(newestCreatedAt).getTime()) / 86400000)
+      : 0;
   const isStale = staleDays >= 1;
 
   return (
