@@ -27,6 +27,7 @@ import {
   Pencil,
   ChevronDown,
   ChevronUp,
+  AlertCircle,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { MemoizedReactMarkdown } from "@/components/markdown";
@@ -419,11 +420,44 @@ export function MemoriesSection() {
     }
   };
 
+  // Show a stale warning when no filter is active and the newest memory is >24h old
+  const newestMemory =
+    !loading &&
+    memories.length > 0 &&
+    !debouncedQuery &&
+    !activeTag &&
+    sortField === "created_at" &&
+    sortDir === "desc"
+      ? memories[0]
+      : null;
+  const staleDays = newestMemory
+    ? Math.floor((Date.now() - new Date(newestMemory.created_at).getTime()) / 86400000)
+    : 0;
+  const isStale = staleDays >= 1;
+
   return (
     <div className="space-y-4 h-full flex flex-col">
       <p className="text-muted-foreground text-sm mb-4">
         facts and preferences the AI has learned from your activity
       </p>
+
+      {/* stale memories warning */}
+      {isStale && (
+        <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-600 dark:text-yellow-400">
+          <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <span>
+            memories haven&apos;t updated in {staleDays} day{staleDays !== 1 ? "s" : ""}.
+            check that a memory-writing pipe is installed and enabled —{" "}
+            <a
+              href="?section=pipes&tab=discover&q=memory"
+              className="underline hover:opacity-80 transition-opacity"
+            >
+              browse memory pipes
+            </a>
+            .
+          </span>
+        </div>
+      )}
 
       {/* search bar + add button */}
       <div className="flex items-center gap-2">

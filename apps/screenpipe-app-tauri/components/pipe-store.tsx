@@ -388,7 +388,14 @@ export function PipeStoreView() {
 
       {/* Tab content */}
       {activeTab === "discover" ? (
-        <DiscoverView onInstalled={() => setActiveTab("my-pipes")} />
+        <DiscoverView
+          onInstalled={() => setActiveTab("my-pipes")}
+          initialQuery={
+            typeof window !== "undefined"
+              ? new URLSearchParams(window.location.search).get("q") ?? ""
+              : ""
+          }
+        />
       ) : (
         <PipesSection />
       )}
@@ -398,7 +405,7 @@ export function PipeStoreView() {
 
 // --- Discover View ---
 
-function DiscoverView({ onInstalled }: { onInstalled?: () => void }) {
+function DiscoverView({ onInstalled, initialQuery = "" }: { onInstalled?: () => void; initialQuery?: string }) {
   const { settings } = useSettings();
   const { toast } = useToast();
   const token = settings.user?.token;
@@ -406,8 +413,8 @@ function DiscoverView({ onInstalled }: { onInstalled?: () => void }) {
   // Browse state
   const [pipes, setPipes] = useState<StorePipe[]>([]);
   const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(initialQuery);
+  const [debouncedQuery, setDebouncedQuery] = useState(initialQuery);
   const [category, setCategory] = useState("All");
   const [sort, setSort] = useState("popular");
 
