@@ -213,6 +213,8 @@ impl WindowsFocusTracker {
     #[cfg(target_os = "windows")]
     pub fn start() -> Result<Self> {
         let (tx, _) = broadcast::channel::<FocusEvent>(16);
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|e| anyhow::anyhow!("no tokio runtime for focus tracker: {e}"))?;
         let inner = Arc::new(Inner {
             tx,
             current: AtomicU32::new(0),
@@ -220,9 +222,6 @@ impl WindowsFocusTracker {
             unknown_emitted: Mutex::new(false),
             tokio_handle: handle.clone(),
         });
-
-        let handle = tokio::runtime::Handle::try_current()
-            .map_err(|e| anyhow::anyhow!("no tokio runtime for focus tracker: {e}"))?;
 
         win_event_shared::set(&inner);
 
