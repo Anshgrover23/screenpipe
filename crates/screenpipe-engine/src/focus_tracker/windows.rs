@@ -129,6 +129,7 @@ struct Inner {
     current: AtomicU32,
     stop_flag: AtomicBool,
     unknown_emitted: Mutex<bool>,
+    tokio_handle: tokio::runtime::Handle,
 }
 
 impl Inner {
@@ -217,6 +218,7 @@ impl WindowsFocusTracker {
             current: AtomicU32::new(0),
             stop_flag: AtomicBool::new(false),
             unknown_emitted: Mutex::new(false),
+            tokio_handle: handle.clone(),
         });
 
         let handle = tokio::runtime::Handle::try_current()
@@ -293,12 +295,13 @@ fn run_win_event_observer() {
         if inner.stop_flag.load(Ordering::Relaxed) {
             return;
         }
-        // Resolve the monitor list on-the-fly. `list_monitors()` is async —
-        // use a short-lived tokio runtime via `futures::executor::block_on`.
-        // Accepts some overhead for the rare case of very fast focus changes;
-        // the hook is not called at high frequency in practice (a few per
-        // second at most during window switching).
-        let monitors = futures::executor::block_on(screenpipe_screen::monitor::list_monitors());
+        // Resolve the monitor list on-the-fly. `list_monitors()` is async and
+        // internally calls `tokio::task::spawn_blocking`, so we must drive it
+        // on the existing Tokio runtime — not a bare futures executor — to
+        // keep the runtime handle accessible on this thread.
+        let monitors = inner
+            .tokio_handle
+            .block_on(screenpipe_screen::monitor::list_monitors());
         inner.resolve_and_emit(&monitors);
     }
 
