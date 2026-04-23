@@ -9,21 +9,13 @@ use async_trait::async_trait;
 use screenpipe_secrets::SecretStore;
 use serde_json::{json, Map, Value};
 
-// TODO: Uses the same Azure AD app registration as microsoft365.
-// See microsoft365.rs for full setup steps.
-// Same client_id and client_secret; different integration_id means separate token storage
-// and Teams-scoped consent dialog (users can connect Teams without full M365 access).
-//
-// Env vars required on the screenpipe.pe server:
-//   OAUTH_TEAMS_CLIENT_ID=<same value as OAUTH_MICROSOFT365_CLIENT_ID>
-//   OAUTH_TEAMS_CLIENT_SECRET=<same value as OAUTH_MICROSOFT365_CLIENT_SECRET>
-//
-// The webhook_url field remains supported for send-only use cases (no OAuth needed):
-// users can paste an Incoming Webhook URL from Teams Admin and use it without signing in.
-// OAuth is the preferred path for full read + write access.
+// Uses the same Azure AD app registration as microsoft365. A distinct
+// integration_id gives the user a Teams-scoped consent dialog and isolates
+// token storage — users can connect Teams without granting full M365 access.
+// The webhook_url field remains supported for send-only use cases (no OAuth).
 static OAUTH: OAuthConfig = OAuthConfig {
     auth_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-    client_id: "TODO_AZURE_AD_CLIENT_ID",
+    client_id: "0760348d-bd6f-43f8-8a33-4d7a41dca9ef",
     extra_auth_params: &[
         (
             "scope",
@@ -106,10 +98,7 @@ impl Integration for Teams {
                 .error_for_status()?
                 .json()
                 .await?;
-            let count = resp["value"]
-                .as_array()
-                .map(|a| a.len())
-                .unwrap_or(0);
+            let count = resp["value"].as_array().map(|a| a.len()).unwrap_or(0);
             return Ok(format!("connected via OAuth — {} team(s) found", count));
         }
 

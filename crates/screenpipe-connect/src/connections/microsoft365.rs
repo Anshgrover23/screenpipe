@@ -9,40 +9,23 @@ use async_trait::async_trait;
 use screenpipe_secrets::SecretStore;
 use serde_json::{Map, Value};
 
-// TODO: Azure AD app registration required before this OAuth flow works.
+// Azure AD app registration used by screenpipe's Microsoft 365 integration.
+// The `client_id` below is the public Application (client) ID and is safe to
+// ship in the binary; `client_secret` is held by the screenpi.pe backend and
+// used only by the token-exchange proxy at /api/oauth/exchange.
 //
-// Steps:
-//   1. Go to https://portal.azure.com/ > Azure Active Directory > App registrations > New registration
-//   2. Name: "screenpipe" (or any name)
-//   3. Supported account types: "Accounts in any organizational directory and personal Microsoft accounts"
-//   4. Redirect URI: Web → http://localhost:3030/connections/oauth/callback
-//   5. Under "API permissions" > "Add a permission" > "Microsoft Graph" > "Delegated permissions"
-//      Add the following (all delegated, user consents at login):
-//        - offline_access      (refresh tokens)
-//        - openid, profile     (user identity)
-//        - Mail.Read           (read emails)
-//        - Mail.ReadWrite      (read + modify emails)
-//        - Mail.Send           (send email)
-//        - Calendars.Read      (read calendar)
-//        - Calendars.ReadWrite (read + write calendar events)
-//        - Files.Read          (read OneDrive files)
-//        - Files.ReadWrite     (read + write OneDrive files)
-//        - Chat.ReadWrite      (read + send Teams DMs)
-//        - Team.ReadBasic.All  (list joined teams)
-//        - ChannelMessage.Read.All  (read channel messages — REQUIRES admin consent in tenant)
-//   6. Under "Certificates & secrets" > "New client secret" — save the value immediately
-//   7. Copy the Application (client) ID and replace TODO_AZURE_AD_CLIENT_ID below
-//   8. Add these env vars to the screenpipe.pe server (.env or deployment):
-//        OAUTH_MICROSOFT365_CLIENT_ID=<your client_id>
-//        OAUTH_MICROSOFT365_CLIENT_SECRET=<your client_secret>
-//
-// Note: ChannelMessage.Read.All requires a tenant admin to grant consent at
-// https://login.microsoftonline.com/<tenant>/adminconsent
-// Users in orgs that haven't pre-approved it will receive a consent error for that scope.
-// The other scopes work with standard user consent.
+// Delegated Microsoft Graph permissions requested at consent:
+//   offline_access, openid, profile,
+//   Mail.Read, Mail.ReadWrite, Mail.Send,
+//   Calendars.Read, Calendars.ReadWrite,
+//   Files.Read, Files.ReadWrite,
+//   Chat.ReadWrite, Team.ReadBasic.All,
+//   ChannelMessage.Read.All  (requires tenant admin consent at
+//     https://login.microsoftonline.com/<tenant>/adminconsent — other scopes
+//     work with standard user consent).
 static OAUTH: OAuthConfig = OAuthConfig {
     auth_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-    client_id: "TODO_AZURE_AD_CLIENT_ID",
+    client_id: "0760348d-bd6f-43f8-8a33-4d7a41dca9ef",
     extra_auth_params: &[
         (
             "scope",
