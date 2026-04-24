@@ -39,7 +39,7 @@
       }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       body {
-        width: 360px;
+        width: 280px;
         background: var(--bg);
         color: var(--text);
         font-size: 13px;
@@ -80,10 +80,9 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        padding: 6px 14px;
-        font-size: 11.5px;
+        padding: 10px 14px;
+        font-size: 12px;
         color: var(--muted);
-        border-bottom: 1px solid var(--border);
       }
       #status-dot {
         width: 7px;
@@ -104,93 +103,6 @@
       #status-bar[data-state="auth_required"],
       #status-bar[data-state="server_down"],
       #status-bar[data-state="error"]         { color: var(--red); }
-
-      /* ── Search row ── */
-      .search-row {
-        display: flex;
-        gap: 6px;
-        padding: 9px 12px;
-        border-bottom: 1px solid var(--border);
-      }
-      #query {
-        flex: 1;
-        font: inherit;
-        font-size: 13px;
-        padding: 7px 10px;
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        background: var(--surface);
-        color: var(--text);
-        outline: none;
-        min-width: 0;
-        -webkit-appearance: none;
-      }
-      #query:focus { border-color: var(--muted); }
-      #query::placeholder { color: var(--muted); }
-      #search-btn {
-        font: inherit;
-        font-size: 13px;
-        font-weight: 500;
-        padding: 7px 13px;
-        border: none;
-        border-radius: 6px;
-        background: var(--accent-bg);
-        color: var(--accent-fg);
-        cursor: pointer;
-        flex-shrink: 0;
-      }
-      #search-btn:hover { opacity: 0.82; }
-      #search-btn:active { opacity: 0.65; }
-
-      /* ── Results ── */
-      #results {
-        max-height: 340px;
-        overflow-y: auto;
-      }
-      .result-item {
-        padding: 9px 14px;
-        border-bottom: 1px solid var(--border);
-      }
-      .result-item:last-child { border-bottom: none; }
-      .result-item:hover { background: var(--surface); }
-      .result-meta {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        margin-bottom: 3px;
-        gap: 8px;
-      }
-      .result-label {
-        font-size: 10.5px;
-        font-weight: 600;
-        color: var(--muted);
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .result-time {
-        font-size: 11px;
-        color: var(--muted);
-        flex-shrink: 0;
-      }
-      .result-text {
-        font-size: 12px;
-        line-height: 1.5;
-        color: var(--text);
-        overflow: hidden;
-        display: -webkit-box;
-        -webkit-line-clamp: 3;
-        -webkit-box-orient: vertical;
-      }
-      .empty {
-        padding: 28px 14px;
-        text-align: center;
-        color: var(--muted);
-        font-size: 12px;
-      }
-      .empty.error { color: var(--red); }
     </style>
   </head>
   <body>
@@ -202,22 +114,6 @@
     <div id="status-bar" data-state="checking">
       <span id="status-dot"></span>
       <span id="status-text">checking…</span>
-    </div>
-
-    <div class="search-row">
-      <input
-        id="query"
-        type="search"
-        placeholder="search your history…"
-        autocomplete="off"
-        spellcheck="false"
-        autofocus
-      />
-      <button id="search-btn">Search</button>
-    </div>
-
-    <div id="results">
-      <p class="empty">type to search your screen &amp; audio history</p>
     </div>
 
     <script src="popup.js" type="module"></script>
