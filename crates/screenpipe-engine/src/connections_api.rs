@@ -1021,6 +1021,7 @@ fn resolve_auth(
     proxy_auth: &screenpipe_connect::connections::ProxyAuth,
     creds: Option<&Map<String, Value>>,
     oauth_token: Option<&str>,
+    oauth_extras: Option<&Value>,
 ) -> ResolvedAuth {
     use screenpipe_connect::connections::ProxyAuth;
     match proxy_auth {
@@ -1040,13 +1041,16 @@ fn resolve_auth(
         ProxyAuth::Header {
             name,
             credential_key,
-        } => creds
-            .and_then(|c| {
-                c.get(*credential_key)
-                    .and_then(|v| v.as_str())
-                    .map(|k| ResolvedAuth::Header(name.to_string(), k.to_string()))
-            })
-            .unwrap_or(ResolvedAuth::None),
+        } => {
+            // Header-based auth can come from either stored connection creds
+            // or OAuth metadata persisted alongside the token response.
+            let from_creds = creds.and_then(|c| c.get(*credential_key).and_then(|v| v.as_str()));
+            let from_oauth = oauth_extras.and_then(|v| v[*credential_key].as_str());
+            from_creds
+                .or(from_oauth)
+                .map(|k| ResolvedAuth::Header(name.to_string(), k.to_string()))
+                .unwrap_or(ResolvedAuth::None)
+        }
         ProxyAuth::BasicAuth {
             username_key,
             password_key,
@@ -1145,6 +1149,7 @@ async fn connection_proxy(
         &proxy_cfg.auth,
         creds.as_ref(),
         oauth_token.await.as_deref(),
+        oauth_json.as_ref(),
     );
 
     // Check that auth was actually resolved (don't send unauthenticated requests)
