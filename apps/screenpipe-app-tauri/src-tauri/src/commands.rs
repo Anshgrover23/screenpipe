@@ -1915,7 +1915,24 @@ pub fn register_window_shortcuts(app_handle: tauri::AppHandle) -> Result<(), Str
         if matches!(event.state, ShortcutState::Pressed) {
             if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 info!("Escape pressed, emitting escape-pressed event");
-                let _ = app.emit("escape-pressed", ());
+                // Target the Main overlay webview explicitly. `app.emit` can be
+                // delivered only to the focused Tauri window; when Home stays
+                // focused while the fullscreen overlay is visible on top, the
+                // overlay never saw escape-pressed (and no keydown reaches it),
+                // so Esc looked broken until a focus change re-routed events.
+                let mut delivered = false;
+                for label in [RewindWindowId::Main.label(), "main-window"] {
+                    if let Some(w) = app.get_webview_window(label) {
+                        if w.is_visible().unwrap_or(false) {
+                            let _ = app.emit_to(label, "escape-pressed", ());
+                            delivered = true;
+                            break;
+                        }
+                    }
+                }
+                if !delivered {
+                    let _ = app.emit("escape-pressed", ());
+                }
             })) {
                 tracing::error!("panic in escape handler: {:?}", e);
             }
