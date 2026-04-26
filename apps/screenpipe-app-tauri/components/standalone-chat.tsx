@@ -1758,7 +1758,7 @@ export function StandaloneChat({
             autoSendBypassRef.current = true;
             await new Promise(r => setTimeout(r, 200));
             if (sendMessageRef.current) {
-              await sendMessageRef.current(fullMessage);
+              await sendMessageRef.current(fullMessage, prompt);
               setInput("");
               if (inputRef.current) inputRef.current.style.height = "auto";
             }
