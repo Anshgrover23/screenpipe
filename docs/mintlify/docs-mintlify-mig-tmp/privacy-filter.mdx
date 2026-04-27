@@ -1,7 +1,7 @@
 ---
 title: "privacy filter - strip personal info before AI sees it"
 sidebarTitle: "privacy filter"
-description: "Remove names, emails, phone numbers, addresses, and account numbers from your screen data before it reaches the AI. Runs inside a confidential-compute enclave you can verify."
+description: "Strip names, emails, phone numbers, addresses, and account numbers from your screen data before AI sees it — inside a verifiable confidential-compute enclave."
 icon: "shield-halved"
 ---
 
@@ -58,7 +58,7 @@ it runs inside a confidential-compute enclave — a virtual machine whose memory
 example:
 
 ```
-Before:  "email louis.beaumont@gmail.com about the invoice, call me at 555-1234"
+Before:  "email louis@screenpi.pe about the invoice, call me at 555-1234"
 After:   "email [EMAIL] about the invoice, call me at [PHONE]"
 ```
 

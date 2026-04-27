@@ -53,6 +53,7 @@ mod livetext;
 #[cfg(target_os = "macos")]
 mod livetext_ffi;
 mod oauth;
+mod owned_browser;
 mod permission_events;
 mod permissions;
 mod pi;
@@ -317,6 +318,45 @@ async fn is_server_running(app: AppHandle) -> Result<bool, String> {
 async fn main() {
     let _ = fix_path_env::fix();
 
+    // Refuse to launch while a `screenpipe db recover|cleanup` operation is in
+    // progress. The CLI writes ~/.screenpipe/.db_recovery.lock before doing
+    // anything destructive; if the user double-clicks the app icon mid-recovery,
+    // we'd otherwise race the swap and corrupt the DB again. The CLI heartbeats
+    // the lock every 30 s, so a fresh mtime means the op is genuinely live.
+    //
+    // Escape hatches (in order of preference):
+    //   1. `screenpipe db unlock` — friendly path
+    //   2. SCREENPIPE_IGNORE_DB_LOCK=1 env var — bypass on this launch only
+    //   3. `rm ~/.screenpipe/.db_recovery.lock` — manual
+    //
+    // See `crates/screenpipe-engine/src/cli/db.rs`.
+    if std::env::var("SCREENPIPE_IGNORE_DB_LOCK").ok().as_deref() != Some("1") {
+        let lock_path =
+            screenpipe_core::paths::default_screenpipe_data_dir().join(".db_recovery.lock");
+        if let Ok(metadata) = std::fs::metadata(&lock_path) {
+            let stale = metadata
+                .modified()
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .map(|d| d.as_secs() > 3600)
+                .unwrap_or(false);
+            if stale {
+                let _ = std::fs::remove_file(&lock_path);
+            } else {
+                let body = std::fs::read_to_string(&lock_path).unwrap_or_default();
+                eprintln!(
+                    "screenpipe: a `screenpipe db ...` operation is in progress.\n\
+                     lock: {}\n\
+                     content: {}\n\
+                     options:\n  • wait for the op to finish, then re-open the app\n  • run `screenpipe db unlock` if you're sure it's stuck\n  • set SCREENPIPE_IGNORE_DB_LOCK=1 and retry to bypass this check",
+                    lock_path.display(),
+                    body.trim(),
+                );
+                std::process::exit(2);
+            }
+        }
+    }
+
     // Export the Windows root/CA cert stores to a PEM file and set
     // NODE_EXTRA_CA_CERTS before any bun/node subprocess can spawn. Fixes
     // "unable to verify the first certificate" on corporate networks where
@@ -381,7 +421,8 @@ async fn main() {
     let store_json = std::fs::read(&store_path).ok().and_then(|data| {
         if data.len() >= 8 && &data[..8] == b"SPSTORE1" {
             // Encrypted store — try to decrypt with keychain key
-            let key = match secrets::get_key() {
+            // Only attempt if encryption is enabled (file being encrypted is the signal)
+            let key = match secrets::get_key_if_encryption_enabled() {
                 secrets::KeyResult::Found(k) => k,
                 _ => return None,
             };
@@ -687,6 +728,7 @@ async fn main() {
                 commands::show_onboarding_window,
                 commands::get_keychain_status,
                 commands::enable_keychain_encryption,
+                commands::disable_keychain_encryption,
                 commands::open_search_window,
                 // Shortcut reminder commands
                 commands::show_shortcut_reminder,
@@ -912,6 +954,7 @@ async fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::is_enterprise_build_cmd,
             commands::get_local_api_config,
+            commands::regenerate_api_auth_key,
             commands::get_enterprise_license_key,
             enterprise_policy::set_enterprise_policy,
             commands::save_enterprise_license_key,
@@ -928,6 +971,9 @@ async fn main() {
             permissions::check_microphone_permission,
             permissions::check_screen_recording_permission,
             permissions::check_accessibility_permission_cmd,
+            owned_browser::owned_browser_set_bounds,
+            owned_browser::owned_browser_navigate,
+            owned_browser::owned_browser_hide,
             permissions::reset_and_request_permission,
             permissions::get_missing_permissions,
             permissions::check_arc_installed,
@@ -962,6 +1008,7 @@ async fn main() {
             commands::show_onboarding_window,
             commands::get_keychain_status,
             commands::enable_keychain_encryption,
+            commands::disable_keychain_encryption,
             commands::open_search_window,
             // Shortcut reminder commands
             commands::show_shortcut_reminder,
@@ -1517,24 +1564,28 @@ async fn main() {
                 let capture_arc = recording_state.capture.clone();
                 let is_starting_clone = recording_state.is_starting.clone();
 
-                // Pipe output callback
+                // Pipe output callback. Stage 5: legacy `pipe_event`
+                // topic dropped — every pipe stdout line goes out on
+                // `agent_event` with sessionId `pipe:<name>:<execId>`.
                 let app_for_pipe = app_handle.clone();
+                // Separate clone for the owned-browser install path — the
+                // on_pipe_output closure below captures app_for_pipe by
+                // move, so we need a distinct handle that survives into
+                // the server thread.
+                let app_for_owned = app_handle.clone();
                 let on_pipe_output: Option<screenpipe_core::pipes::OnPipeOutputLine> = Some(
                     std::sync::Arc::new(move |pipe_name: &str, exec_id: i64, line: &str| {
-                        let payload = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
-                            serde_json::json!({
-                                "pipeName": pipe_name,
-                                "executionId": exec_id,
-                                "event": parsed,
-                            })
+                        let inner = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+                            parsed
                         } else {
-                            serde_json::json!({
-                                "pipeName": pipe_name,
-                                "executionId": exec_id,
-                                "event": { "type": "raw_line", "text": line },
-                            })
+                            serde_json::json!({ "type": "raw_line", "text": line })
                         };
-                        let _ = app_for_pipe.emit("pipe_event", &payload);
+                        let unified = serde_json::json!({
+                            "source": "pipe",
+                            "sessionId": format!("pipe:{}:{}", pipe_name, exec_id),
+                            "event": inner,
+                        });
+                        let _ = app_for_pipe.emit("agent_event", &unified);
                     }),
                 );
 
@@ -1612,8 +1663,38 @@ async fn main() {
 
                             info!("Starting server core + capture on dedicated runtime...");
 
+                            // Owned-browser: create the connect-side instance now so the
+                            // engine can register it in the BrowserRegistry on startup.
+                            // Webview build is async — kick it off in the background and
+                            // attach the handle once the WebviewWindow is ready. Until
+                            // then, /connections/browsers/owned-default/eval returns 503.
+                            let owned_browser =
+                                screenpipe_connect::connections::browser::OwnedBrowser::default_instance();
+                            {
+                                let owned_for_install = owned_browser.clone();
+                                let app_for_install = app_for_owned.clone();
+                                let data_dir_for_install = config.data_dir.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    match crate::owned_browser::install(&app_for_install, data_dir_for_install).await {
+                                        Ok(handle) => {
+                                            owned_for_install.attach(handle).await;
+                                            info!("owned-browser ready");
+                                        }
+                                        Err(e) => {
+                                            warn!("owned-browser install failed: {e} — agent will see ready=false");
+                                        }
+                                    }
+                                });
+                            }
+
                             // Phase 1: Start server core
-                            let server = match server_core::ServerCore::start(&config, on_pipe_output).await {
+                            let server = match server_core::ServerCore::start(
+                                &config,
+                                on_pipe_output,
+                                Some(owned_browser),
+                            )
+                            .await
+                            {
                                 Ok(s) => s,
                                 Err(e) => {
                                     error!("Failed to start server core: {}", e);

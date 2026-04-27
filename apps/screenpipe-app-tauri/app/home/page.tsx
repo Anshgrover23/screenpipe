@@ -17,26 +17,32 @@ import {
   Volume2,
   PanelLeftClose,
   PanelLeftOpen,
+  Search,
   Sparkles,
   Phone,
   X,
 } from "lucide-react";
 import { emit } from "@tauri-apps/api/event";
-import { useChatStore } from "@/lib/stores/chat-store";
+import { useChatStore, getOrCreateEmptyChatId } from "@/lib/stores/chat-store";
 import { useOverlayData } from "@/app/shortcut-reminder/use-overlay-data";
 import { cn } from "@/lib/utils";
 import { AppSidebar, SidebarProvider, useSidebarContext } from "@/components/app-sidebar";
+import { usePlatform } from "@/lib/hooks/use-platform";
 import { FeedbackSection } from "@/components/settings/feedback-section";
 import { PipeStoreView } from "@/components/pipe-store";
 import { MemoriesSection } from "@/components/settings/memories-section";
 import { StandaloneChat } from "@/components/standalone-chat";
 import { ChatSidebar } from "@/components/chat-sidebar";
 import { mountPiEventRouter } from "@/lib/stores/pi-event-router";
+import { mountPipeRunRecorder } from "@/lib/events/pipe-run-recorder";
+import { mountPipeWatchWriter } from "@/lib/events/pipe-watch-writer";
 import { NotificationBell } from "@/components/notification-bell";
 import Timeline from "@/components/rewind/timeline";
 import { useQueryState } from "nuqs";
 import { listen } from "@tauri-apps/api/event";
 import { useSettings } from "@/lib/hooks/use-settings";
+import { commands } from "@/lib/utils/tauri";
+import { formatShortcutDisplay } from "@/lib/chat-utils";
 import { useTeam } from "@/lib/hooks/use-team";
 import { useEnterprisePolicy } from "@/lib/hooks/use-enterprise-policy";
 import { EnterpriseLicensePrompt } from "@/components/enterprise-license-prompt";
@@ -68,6 +74,7 @@ const SETTINGS_SECTIONS = new Set<string>([
 
 function HomeContent() {
   const router = useRouter();
+  const { isMac } = usePlatform();
   const [activeSection, setActiveSection] = useQueryState("section", {
     defaultValue: "home",
     parse: (value) => {
@@ -109,6 +116,16 @@ function HomeContent() {
   // freeze the moment the chat unmounts. Idempotent.
   useEffect(() => {
     void mountPiEventRouter();
+    // Pipe-run recorder — buffers pipe-source events on the agent-event
+    // bus and saves each completed run as a `kind: "pipe-run"` chat
+    // file. Pairs with the chat router; both run for the lifetime of
+    // the app process. Idempotent.
+    void mountPipeRunRecorder();
+    // Pipe-watch writer — sole authority on chat-store messages for
+    // sessions with kind="pipe-watch". The chat panel mirrors the
+    // store; this writer is what makes "switch away and back" preserve
+    // the full live transcript. Idempotent.
+    void mountPipeWatchWriter();
   }, []);
 
   // Selecting a chat from the sidebar (or any other source that emits
@@ -135,6 +152,21 @@ function HomeContent() {
       unlistenFn?.();
     };
   }, [setActiveSection]);
+
+  // Clear the sidebar's "current" highlight when leaving the chat
+  // view; restore it from panelSessionId when coming back. The chat
+  // panel stays mounted (display:none) and keeps streaming, but
+  // visually the row shouldn't look "selected" while the user is
+  // looking at Pipes/Memories/etc.
+  useEffect(() => {
+    const { actions } = useChatStore.getState();
+    if (activeSection === "home") {
+      const panelId = useChatStore.getState().panelSessionId;
+      if (panelId) actions.setCurrent(panelId);
+    } else {
+      actions.setCurrent(null);
+    }
+  }, [activeSection]);
 
   // Sidebar collapse state (persisted in localStorage)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -389,28 +421,72 @@ function HomeContent() {
       <div className="h-screen flex min-h-0">
           {/* Sidebar */}
           <TooltipProvider delayDuration={0}>
+          {/* Top-left action buttons — pinned next to the macOS traffic
+              lights when the sidebar is EXPANDED. When collapsed these
+              live as the first two rows of the icon column instead (see
+              below), so the title bar stays clean and the column has a
+              single icon per line. Fixed positioning anchors them to the
+              viewport so they aren't clipped by AppSidebar's overflow. */}
+          {!sidebarCollapsed && (
+            <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={toggleSidebar}
+                    aria-label="collapse sidebar"
+                    className={cn(
+                      // top-1 + p-1 puts the 14px icon's center at y≈15px, matching the
+                      // vertical center of the macOS traffic lights (which sit at y≈14).
+                      "fixed top-1 z-20 p-1 rounded-md transition-colors",
+                      isMac ? "left-[78px]" : "left-2",
+                      isTranslucent ? "vibrant-nav-item" : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                    )}
+                  >
+                    <PanelLeftClose className="h-3.5 w-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">
+                  collapse sidebar <kbd className="ml-1 px-1 py-0.5 bg-muted rounded text-[10px]">⌘B</kbd>
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => {
+                      void commands.showWindow({ Search: { query: null } });
+                    }}
+                    aria-label="search"
+                    className={cn(
+                      "fixed top-1 z-20 p-1 rounded-md transition-colors",
+                      // 28px right of the collapse icon (icon 16 + gap 8 + small breathing).
+                      isMac ? "left-[110px]" : "left-9",
+                      isTranslucent ? "vibrant-nav-item" : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                    )}
+                  >
+                    <Search className="h-3.5 w-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">
+                  search
+                  <kbd className="ml-1 px-1 py-0.5 bg-muted rounded text-[10px]">
+                    {formatShortcutDisplay(
+                      settings.searchShortcut || (isMac ? "Control+Super+K" : "Alt+K"),
+                      isMac,
+                    )}
+                  </kbd>
+                </TooltipContent>
+              </Tooltip>
+            </>
+          )}
+
           <AppSidebar collapsed={sidebarCollapsed} className="pl-4">
+            {!sidebarCollapsed && (
             <div className={cn(isTranslucent ? "vibrant-sidebar-border" : "", "border-b", sidebarCollapsed ? "px-2 py-3" : "px-4 py-3")}>
-              {/* Row 1: name + phone + collapse */}
+              {/* Row 1: name (collapse moved out — pinned top-left next
+                  to the traffic lights, see above). */}
               <div className={cn("flex items-center", sidebarCollapsed ? "justify-center" : "justify-between")}>
                 {!sidebarCollapsed && <h1 className={cn("text-lg font-bold", isTranslucent ? "vibrant-heading" : "text-foreground")}>screenpipe</h1>}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      onClick={toggleSidebar}
-                      className={cn("transition-colors", isTranslucent ? "vibrant-nav-item" : "text-muted-foreground hover:text-foreground")}
-                    >
-                      {sidebarCollapsed ? (
-                        <PanelLeftOpen className="h-4 w-4" />
-                      ) : (
-                        <PanelLeftClose className="h-4 w-4" />
-                      )}
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" className="text-xs">
-                    {sidebarCollapsed ? "expand sidebar" : "collapse sidebar"} <kbd className="ml-1 px-1 py-0.5 bg-muted rounded text-[10px]">⌘B</kbd>
-                  </TooltipContent>
-                </Tooltip>
               </div>
               {/* Row 2: device status + action buttons */}
               {!sidebarCollapsed && (() => {
@@ -497,6 +573,7 @@ function HomeContent() {
                 );
               })()}
             </div>
+            )}
 
             {/* Navigation.
                 Outer flex column has no overflow — the chat-list section
@@ -504,8 +581,69 @@ function HomeContent() {
                 bottom items would be pushed below the fold by long
                 conversation lists. */}
             <div className="p-2 flex-1 flex flex-col min-h-0">
-              {/* Main sections */}
+              {/* Main sections — when collapsed, the column is prefixed
+                  with the collapse + search icons (one-per-line, with a
+                  divider) so they sit just below the traffic lights. */}
               <div className="space-y-0.5 shrink-0">
+                {sidebarCollapsed && (
+                  <>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          onClick={toggleSidebar}
+                          aria-label="expand sidebar"
+                          className={cn(
+                            "w-full flex items-center justify-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
+                            isTranslucent
+                              ? "vibrant-nav-item vibrant-nav-hover"
+                              : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          <PanelLeftOpen className={cn(
+                            "h-3.5 w-3.5 transition-colors flex-shrink-0",
+                            isTranslucent ? "vibrant-sidebar-fg-muted" : "text-muted-foreground group-hover:text-foreground"
+                          )} />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="right" className="text-xs">
+                        expand sidebar <kbd className="ml-1 px-1 py-0.5 bg-muted rounded text-[10px]">⌘B</kbd>
+                      </TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          onClick={() => {
+                            void commands.showWindow({ Search: { query: null } });
+                          }}
+                          aria-label="search"
+                          className={cn(
+                            "w-full flex items-center justify-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group",
+                            isTranslucent
+                              ? "vibrant-nav-item vibrant-nav-hover"
+                              : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          <Search className={cn(
+                            "h-3.5 w-3.5 transition-colors flex-shrink-0",
+                            isTranslucent ? "vibrant-sidebar-fg-muted" : "text-muted-foreground group-hover:text-foreground"
+                          )} />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="right" className="text-xs">
+                        search
+                        <kbd className="ml-1 px-1 py-0.5 bg-muted rounded text-[10px]">
+                          {formatShortcutDisplay(
+                            settings.searchShortcut || (isMac ? "Control+Super+K" : "Alt+K"),
+                            isMac,
+                          )}
+                        </kbd>
+                      </TooltipContent>
+                    </Tooltip>
+                    {/* Divider between the search affordance and the
+                        primary nav (+ pipes / timeline / memories). */}
+                    <div className={cn("my-1 border-t", isTranslucent ? "vibrant-sidebar-border" : "border-border/50")} />
+                  </>
+                )}
                 {mainSections.map((section) => {
                   const isActive = activeSection === section.id;
                   const btn = (
@@ -520,18 +658,25 @@ function HomeContent() {
                         // sidebar's "+ new chat" behaviour exactly so
                         // the two entry points stay in sync.
                         if (section.id === "home") {
-                          const id = crypto.randomUUID();
+                          // Reuse an existing empty chat if there is one;
+                          // otherwise create. Mirrors the sidebar's
+                          // "+ new chat" handler so spamming the nav
+                          // doesn't pile up empty rows.
+                          const { id, isNew } = getOrCreateEmptyChatId();
                           const store = useChatStore.getState();
-                          store.actions.upsert({
-                            id,
-                            title: "new chat",
-                            preview: "",
-                            status: "idle",
-                            messageCount: 0,
-                            updatedAt: Date.now(),
-                            pinned: false,
-                            unread: false,
-                          });
+                          if (isNew) {
+                            store.actions.upsert({
+                              id,
+                              title: "new chat",
+                              preview: "",
+                              status: "idle",
+                              messageCount: 0,
+                              createdAt: Date.now(),
+                              updatedAt: Date.now(),
+                              pinned: false,
+                              unread: false,
+                            });
+                          }
                           store.actions.setCurrent(id);
                           void emit("chat-load-conversation", {
                             conversationId: id,
@@ -581,7 +726,11 @@ function HomeContent() {
               {!sidebarCollapsed ? (
                 <div
                   className={cn(
-                    "flex-1 min-h-0 flex flex-col mt-2 -mx-2 border-t pt-2",
+                    // pb-6 keeps a clear gap between the recents list
+                    // and the team / settings / help row — pb-3 was
+                    // too tight; the list ran almost flush against the
+                    // bottom nav.
+                    "flex-1 min-h-0 flex flex-col mt-2 -mx-2 border-t pt-2 pb-6",
                     isTranslucent ? "vibrant-sidebar-border" : "border-border/50"
                   )}
                 >

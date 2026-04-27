@@ -55,6 +55,9 @@ impl ServerCore {
     pub async fn start(
         config: &RecordingConfig,
         on_pipe_output: Option<screenpipe_core::pipes::OnPipeOutputLine>,
+        owned_browser: Option<
+            std::sync::Arc<screenpipe_connect::connections::browser::OwnedBrowser>,
+        >,
     ) -> Result<Self, String> {
         info!("Starting server core on port {}", config.port);
         crate::health::set_boot_phase("starting", Some("starting server"));
@@ -249,14 +252,11 @@ impl ServerCore {
         }
 
         crate::health::set_boot_phase("building_audio", Some("starting audio pipeline"));
-        let mut audio_manager = audio_manager_builder
-            .build(db.clone())
-            .await
-            .map_err(|e| {
-                let msg = format!("Failed to build audio manager: {}", e);
-                crate::health::set_boot_error(&msg);
-                msg
-            })?;
+        let mut audio_manager = audio_manager_builder.build(db.clone()).await.map_err(|e| {
+            let msg = format!("Failed to build audio manager: {}", e);
+            crate::health::set_boot_error(&msg);
+            msg
+        })?;
 
         // Wire audio → hot cache
         {
@@ -328,12 +328,13 @@ impl ServerCore {
         server.manual_meeting = Some(manual_meeting.clone());
         server.api_auth = config.api_auth;
         server.api_auth_key = config.api_auth_key.clone();
+        server.owned_browser = owned_browser;
 
         // Secret store — read-only keychain access on startup.
         // Never create a key automatically (that triggers a macOS modal).
         // Users opt in via onboarding or Settings > Privacy.
         {
-            let secret_key = match crate::secrets::get_key() {
+            let secret_key = match crate::secrets::get_key_if_encryption_enabled() {
                 crate::secrets::KeyResult::Found(k) => Some(k),
                 _ => {
                     info!("keychain: no encryption key found — secrets stored unencrypted until user opts in");

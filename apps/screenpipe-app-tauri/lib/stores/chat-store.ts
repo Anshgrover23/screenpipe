@@ -21,6 +21,7 @@
  */
 
 import { create } from "zustand";
+import type { ConversationKind, PipeContext } from "@/lib/hooks/use-settings";
 
 export type SessionStatus =
   | "idle" // not currently producing output
@@ -53,8 +54,20 @@ export interface SessionRecord {
   lastError?: string;
   /** Number of messages persisted to disk for this session. */
   messageCount: number;
-  /** ms since epoch of the most recent activity (for sort + LRU). */
+  /** ms since epoch when the row first appeared in the sidebar. Used
+   *  as the sort fallback for chats that haven't received a user
+   *  message yet. */
+  createdAt: number;
+  /** ms since epoch of the most recent activity. Tracked for telemetry
+   *  / "last activity" UI only — DOES NOT affect sort order. */
   updatedAt: number;
+  /** ms since epoch of the most recent USER-SENT message. Drives the
+   *  sort order along with createdAt: rows with a user message bubble
+   *  to the top when the user sends, but incoming router activity
+   *  (pi_event deltas) and switching chats do NOT reshuffle the list.
+   *  This matches how email clients show inboxes — bumped on action,
+   *  stable while you're reading. */
+  lastUserMessageAt?: number;
   /** User pinned this conversation to the top of the sidebar. */
   pinned: boolean;
   /** True when there's new assistant activity (delta or completion) that
@@ -92,13 +105,33 @@ export interface SessionRecord {
    *  the disk round-trip when the user comes back to a session that's
    *  been live in the store. */
   hydratedAt?: number;
+
+  // ── Conversation kind + pipe metadata ──────────────────────────────
+  // Splits sessions into chat / pipe-watch / pipe-run so the sidebar
+  // can render them in distinct sections and the chat panel knows
+  // whether to show a pipe-context banner instead of the regular
+  // header. Defaults to "chat" when missing — older on-disk files
+  // hydrate as plain chats with no behavioral change.
+
+  /** What kind of session this is. See `ConversationKind`. */
+  kind?: ConversationKind;
+  /** Pipe metadata — only meaningful when `kind !== "chat"`. */
+  pipeContext?: PipeContext;
 }
 
 interface ChatStoreState {
   /** All known sessions, keyed by id. Includes both alive and on-disk-only. */
   sessions: Record<string, SessionRecord>;
-  /** Currently focused session — the chat panel renders this one. */
+  /** Currently FOCUSED session — i.e. the chat the user is actively
+   *  looking at. Cleared when the user navigates away from the chat
+   *  view (Pipes/Memories/...) so the sidebar row stops being
+   *  highlighted. Distinct from `panelSessionId` which never clears. */
   currentId: string | null;
+  /** The chat the panel is rendering right now, regardless of whether
+   *  the panel is visible. Tracks `piSessionIdRef.current`. The home
+   *  page reads this to restore the sidebar highlight when the user
+   *  navigates back from a non-chat section. */
+  panelSessionId: string | null;
 }
 
 interface ChatStoreActions {
@@ -114,6 +147,10 @@ interface ChatStoreActions {
   /** Mark a session as currently in front. Implicitly clears its unread
    *  flag — viewing the chat counts as reading it. */
   setCurrent: (id: string | null) => void;
+  /** Mirror of the panel's piSessionIdRef.current. Survives section
+   *  switches; used to re-highlight the sidebar row when the user
+   *  navigates back to home. */
+  setPanelSession: (id: string | null) => void;
   /** Toggle the pinned state. */
   togglePinned: (id: string) => void;
   /** Mark a session as having new unseen assistant activity. The router
@@ -194,6 +231,7 @@ export type ChatStore = ChatStoreState & { actions: ChatStoreActions };
 export const useChatStore = create<ChatStore>((set) => ({
   sessions: {},
   currentId: null,
+  panelSessionId: null,
   actions: {
     hydrateFromDisk: (records) =>
       set((s) => {
@@ -220,7 +258,16 @@ export const useChatStore = create<ChatStore>((set) => ({
       }),
 
     upsert: (record) =>
-      set((s) => ({ sessions: { ...s.sessions, [record.id]: record } })),
+      set((s) => {
+        const existing = s.sessions[record.id];
+        // Preserve original createdAt when re-upserting an existing row.
+        // Without this, a router lazy-create after a sidebar optimistic
+        // upsert would reset createdAt and visibly reshuffle the row.
+        const merged: SessionRecord = existing
+          ? { ...existing, ...record, createdAt: existing.createdAt }
+          : record;
+        return { sessions: { ...s.sessions, [record.id]: merged } };
+      }),
 
     patch: (id, partial) =>
       set((s) => {
@@ -259,6 +306,8 @@ export const useChatStore = create<ChatStore>((set) => ({
         }
         return { currentId: id };
       }),
+
+    setPanelSession: (id) => set({ panelSessionId: id }),
 
     togglePinned: (id) =>
       set((s) => {
@@ -422,13 +471,25 @@ export const useChatStore = create<ChatStore>((set) => ({
       set((s) => {
         const existing = s.sessions[id];
         if (!existing) return {};
+        // Non-destructive: if the snapshot's messages array is shorter
+        // than what the store already has, keep the store's. The
+        // snapshot reads `messages` from a React closure which can be
+        // stale (one render cycle behind setMessages from sendPiMessage),
+        // so a fast switch right after send would otherwise wipe the
+        // user message we just appended to the store directly. Take
+        // whichever array is longer — both should converge to the same
+        // tail, the longer one just has fewer dropped writes.
+        const existingMsgs = (existing.messages as unknown[]) ?? [];
+        const incomingMsgs = snapshot.messages ?? [];
+        const messages =
+          incomingMsgs.length >= existingMsgs.length ? incomingMsgs : existingMsgs;
         return {
           sessions: {
             ...s.sessions,
             [id]: {
               ...existing,
-              messages: snapshot.messages,
-              messageCount: snapshot.messages.length,
+              messages,
+              messageCount: messages.length,
               streamingText: snapshot.streamingText,
               streamingMessageId: snapshot.streamingMessageId,
               contentBlocks: snapshot.contentBlocks,
@@ -447,6 +508,40 @@ export const useChatStore = create<ChatStore>((set) => ({
  *  `actions` is set once in the create() call and never replaced, so this
  *  selector returns the same reference forever. Safe to use in deps. */
 export const useChatActions = () => useChatStore((s) => s.actions);
+
+/**
+ * "+ new chat" semantics. If the user already has an empty chat
+ * (no user message sent yet), return its id instead of spawning a
+ * new one — repeatedly clicking the button otherwise floods the
+ * sidebar with empty rows. Picks the panel's current session first
+ * (most likely the one the user is staring at), then falls back to
+ * any other empty session newest-first.
+ *
+ * Returns `{ id, isNew }` so callers can decide whether to upsert.
+ */
+export function getOrCreateEmptyChatId(): { id: string; isNew: boolean } {
+  const state = useChatStore.getState();
+  const isEmpty = (s: SessionRecord) => {
+    const msgs = (s.messages as Array<{ role?: string }> | undefined) ?? [];
+    if (msgs.length === 0) return true;
+    return !msgs.some((m) => m?.role === "user");
+  };
+
+  // Prefer the chat the user is already on.
+  const panelId = state.panelSessionId;
+  if (panelId) {
+    const panel = state.sessions[panelId];
+    if (panel && isEmpty(panel)) return { id: panelId, isNew: false };
+  }
+
+  // Otherwise any other empty session, newest first by createdAt.
+  const empties = Object.values(state.sessions)
+    .filter(isEmpty)
+    .sort((a, b) => b.createdAt - a.createdAt);
+  if (empties.length > 0) return { id: empties[0].id, isNew: false };
+
+  return { id: crypto.randomUUID(), isNew: true };
+}
 
 /**
  * Sorted view: pinned first (most recent), then unpinned by updatedAt desc.
@@ -468,14 +563,21 @@ export const useChatActions = () => useChatStore((s) => s.actions);
  *     [sessionsMap]
  *   );
  */
+/** Sort key: most-recent user-send wins, with createdAt as the
+ *  fallback for chats that haven't been sent in yet. Stable under
+ *  incoming router activity (no text_delta-driven reshuffle). */
+function sortKey(s: SessionRecord): number {
+  return s.lastUserMessageAt ?? s.createdAt;
+}
+
 export function selectOrderedSessions(state: ChatStore): SessionRecord[] {
   const all = Object.values(state.sessions);
   const pinned = all
     .filter((s) => s.pinned)
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+    .sort((a, b) => sortKey(b) - sortKey(a));
   const recents = all
     .filter((s) => !s.pinned)
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+    .sort((a, b) => sortKey(b) - sortKey(a));
   return [...pinned, ...recents];
 }
 
@@ -492,10 +594,10 @@ export function useOrderedSessions(): SessionRecord[] {
     const all = Object.values(sessionsMap);
     const pinned = all
       .filter((s) => s.pinned)
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+      .sort((a, b) => sortKey(b) - sortKey(a));
     const recents = all
       .filter((s) => !s.pinned)
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+      .sort((a, b) => sortKey(b) - sortKey(a));
     return [...pinned, ...recents];
   }, [sessionsMap]);
 }

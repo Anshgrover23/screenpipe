@@ -296,6 +296,13 @@ async fn main() -> anyhow::Result<()> {
             screenpipe_engine::cli::vault::handle_vault_command(subcommand).await?;
             return Ok(());
         }
+        Command::Install {
+            ref url,
+            allow_untrusted,
+        } => {
+            screenpipe_engine::cli::install::handle_install(url, allow_untrusted).await?;
+            return Ok(());
+        }
         Command::Login => {
             screenpipe_engine::cli::login::handle_login_command().await?;
             return Ok(());
@@ -310,6 +317,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Auth { ref subcommand } => {
             screenpipe_engine::cli::auth::handle_auth_command(subcommand).await?;
+            return Ok(());
+        }
+        Command::Db { ref subcommand } => {
+            screenpipe_engine::cli::db::handle_db_command(subcommand).await?;
             return Ok(());
         }
         Command::Backup {
@@ -365,6 +376,9 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async {
         check_for_updates().await;
     });
+
+    // Periodic terminal nudge to install the desktop app (CLI-only).
+    screenpipe_engine::cli_reminder::spawn();
 
     // Initialize Sentry only if telemetry is enabled
     let _sentry_guard = if !record_args.disable_telemetry {
@@ -917,28 +931,35 @@ async fn main() -> anyhow::Result<()> {
     server.api_auth_key = config.api_auth_key.clone();
 
     // Initialize secret store for unified credential management
+    let encryption_requested =
+        config.encrypt_secrets || screenpipe_secrets::is_encryption_requested(&local_data_dir);
+
     {
         // Read-only keychain access: pick up existing key without triggering modals.
-        // Use --encrypt-secrets to create a key if one doesn't exist.
-        let secret_key = if config.encrypt_secrets {
-            match screenpipe_secrets::keychain::get_or_create_key() {
-                Some(k) => {
-                    info!("keychain: encryption key ready (--encrypt-secrets)");
-                    Some(k)
+        // Use --encrypt-secrets / explicit on-disk opt-in to create/use a key.
+        let secret_key = if encryption_requested {
+            if config.encrypt_secrets {
+                match screenpipe_secrets::keychain::get_or_create_key() {
+                    Some(k) => {
+                        info!("keychain: encryption key ready (--encrypt-secrets)");
+                        Some(k)
+                    }
+                    None => {
+                        warn!("keychain: failed to create encryption key — secrets will be stored unencrypted");
+                        None
+                    }
                 }
-                None => {
-                    warn!("keychain: failed to create encryption key — secrets will be stored unencrypted");
-                    None
+            } else {
+                match screenpipe_secrets::keychain::get_key() {
+                    screenpipe_secrets::keychain::KeyResult::Found(k) => {
+                        info!("keychain: using existing encryption key");
+                        Some(k)
+                    }
+                    _ => None,
                 }
             }
         } else {
-            match screenpipe_secrets::keychain::get_key() {
-                screenpipe_secrets::keychain::KeyResult::Found(k) => {
-                    info!("keychain: using existing encryption key");
-                    Some(k)
-                }
-                _ => None,
-            }
+            None
         };
         let secret_store_result =
             screenpipe_secrets::SecretStore::new(db.pool.clone(), secret_key).await;
@@ -1026,6 +1047,34 @@ async fn main() -> anyhow::Result<()> {
             analytics::capture_event_nonblocking("pipe_scheduled_run", props);
         },
     ));
+    // Gate scheduled pipe runs on connection readiness — same predicate the
+    // manual /pipes/:id/run endpoint uses (pipes_api.rs). Avoids running
+    // pipes that are still in "setup mode" (declared connections not paired).
+    {
+        let secret_store_for_check = server.secret_store.clone();
+        let screenpipe_dir_for_check = local_data_dir.clone();
+        pipe_manager.set_connection_check(std::sync::Arc::new(move |required| {
+            let ss = secret_store_for_check.clone();
+            let dir = screenpipe_dir_for_check.clone();
+            Box::pin(async move {
+                let mut missing = Vec::new();
+                for conn_id in required {
+                    let configured = screenpipe_connect::connections::load_connection(
+                        ss.as_deref(),
+                        &dir,
+                        &conn_id,
+                    )
+                    .await
+                    .map(|c| c.enabled && !c.credentials.is_empty())
+                    .unwrap_or(false);
+                    if !configured {
+                        missing.push(conn_id);
+                    }
+                }
+                missing
+            })
+        }));
+    }
     // Inject local API key so pipe subprocesses can authenticate to localhost
     if config.api_auth {
         pipe_manager.set_local_api_key(config.api_auth_key.clone());
@@ -1149,13 +1198,10 @@ async fn main() -> anyhow::Result<()> {
     );
     println!(
         "│ encrypt secrets        │ {:<34} │",
-        if record_args.encrypt_secrets {
+        if encryption_requested {
             "enabled (--encrypt-secrets)"
         } else {
-            match screenpipe_secrets::keychain::get_key() {
-                screenpipe_secrets::keychain::KeyResult::Found(_) => "enabled (existing key)",
-                _ => "disabled",
-            }
+            "disabled"
         }
     );
     println!(

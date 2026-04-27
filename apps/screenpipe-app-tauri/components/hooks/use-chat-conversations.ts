@@ -185,10 +185,41 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
       }),
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now(),
+      // Preserve sort key across reloads. Source of truth: the in-memory
+      // chat-store, which is bumped exactly once per user-send.
+      ...(await (async () => {
+        const { useChatStore } = await import("@/lib/stores/chat-store");
+        const sid = piSessionIdRef.current;
+        const fromStore = sid
+          ? useChatStore.getState().sessions[sid]?.lastUserMessageAt
+          : undefined;
+        const lastUserMessageAt = fromStore ?? existing?.lastUserMessageAt;
+        return lastUserMessageAt ? { lastUserMessageAt } : {};
+      })()),
     };
 
     await saveConversationFile(conversation);
     await refreshFileConversations();
+
+    // Sync the persisted title back into the in-memory chat-store so the
+    // sidebar (which reads `sessions[id].title` directly) updates immediately.
+    // Without this the row stays labelled "new chat" until the next app
+    // launch — that's the rename-doesn't-stick bug users reported.
+    try {
+      const { useChatStore } = await import("@/lib/stores/chat-store");
+      const sessions = useChatStore.getState().sessions;
+      if (sessions[convId]) {
+        useChatStore.getState().actions.patch(convId, {
+          title: conversation.title,
+          messageCount: conversation.messages.length,
+          ...(conversation.lastUserMessageAt
+            ? { lastUserMessageAt: conversation.lastUserMessageAt }
+            : {}),
+        });
+      }
+    } catch (e) {
+      console.warn("[chat] failed to sync title to store:", e);
+    }
 
     // Update activeConversationId in store (lightweight — no conversation data)
     try {
@@ -241,6 +272,18 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     if (!conv) return;
     await saveConversationFile({ ...conv, title: trimmed, updatedAt: Date.now() });
     await refreshFileConversations();
+    // Mirror to the in-memory store so the chat sidebar reflects the new
+    // title without waiting for app restart. Some call sites already patch
+    // the store themselves; this is idempotent — patch is a no-op for
+    // non-existent ids.
+    try {
+      const { useChatStore } = await import("@/lib/stores/chat-store");
+      if (useChatStore.getState().sessions[convId]) {
+        useChatStore.getState().actions.patch(convId, { title: trimmed });
+      }
+    } catch (e) {
+      console.warn("[chat] failed to sync rename to store:", e);
+    }
   };
 
   // ---- deleteConversation ----
@@ -301,15 +344,22 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     //     race against this update can't land between the messages
     //     write and the streaming-refs write (which would point the
     //     router at a streamingMessageId not yet present in messages).
+    //     Pipe-watch sessions are owned by `pipe-watch-writer`, which
+    //     keeps the chat-store as the source of truth — snapshotting
+    //     the panel's mirrored copy back over the writer's accumulator
+    //     would be a regression (lossy round-trip via React state).
     if (outgoingSid && store.sessions[outgoingSid]) {
-      store.actions.snapshotSession(outgoingSid, {
-        messages: messages as any,
-        streamingText: piStreamingTextRef.current,
-        streamingMessageId: piMessageIdRef.current,
-        contentBlocks: [...piContentBlocksRef.current],
-        isStreaming,
-        isLoading,
-      });
+      const outgoingKind = store.sessions[outgoingSid].kind;
+      if (outgoingKind !== "pipe-watch") {
+        store.actions.snapshotSession(outgoingSid, {
+          messages: messages as any,
+          streamingText: piStreamingTextRef.current,
+          streamingMessageId: piMessageIdRef.current,
+          contentBlocks: [...piContentBlocksRef.current],
+          isStreaming,
+          isLoading,
+        });
+      }
     }
 
     // (2) Reset panel flags — these are panel-local, not session-local.
@@ -379,9 +429,21 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
           preview: "",
           status: "idle",
           messageCount: messagesForPanel.length,
-          updatedAt: Date.now(),
+          createdAt: full.createdAt ?? Date.now(),
+          updatedAt: full.updatedAt ?? Date.now(),
           pinned: full.pinned === true,
           unread: false,
+          // Propagate kind / pipeContext from the synthetic conv when
+          // initWatch creates a pipe-watch session — the banner reads
+          // this off the session record so it persists across
+          // foreground/background swaps.
+          ...(conv.kind ? { kind: conv.kind } : full.kind ? { kind: full.kind } : {}),
+          ...(conv.pipeContext ? { pipeContext: conv.pipeContext } : full.pipeContext ? { pipeContext: full.pipeContext } : {}),
+        });
+      } else if (conv.kind || conv.pipeContext) {
+        store.actions.patch(conv.id, {
+          ...(conv.kind ? { kind: conv.kind } : {}),
+          ...(conv.pipeContext ? { pipeContext: conv.pipeContext } : {}),
         });
       }
       store.actions.setMessages(conv.id, messagesForPanel as any);
@@ -540,6 +602,15 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     piSessionIdRef.current = newSid;
     piSessionSyncedRef.current = true;
     store.actions.setCurrent(newSid);
+    // Set conversationId to the new Pi session id immediately. The chat
+    // panel's foreground bus registration (registerForeground) is keyed by
+    // conversationId, and Pi events arrive with sessionId === piSessionId.
+    // If we leave conversationId null until first save, the panel never
+    // registers — Pi events go to the default handler, the chat-shaped
+    // handlers in the panel never fire, and isLoading stays true forever
+    // ("analyzing…" stuck). Setting conversationId here keeps the
+    // foreground key in sync with piSessionIdRef from message 0.
+    setConversationId(newSid);
   };
 
   // ---- filteredConversations ----

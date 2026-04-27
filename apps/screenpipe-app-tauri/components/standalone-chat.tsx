@@ -6,13 +6,22 @@
 import * as React from "react";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import {
+  mountAgentEventBus,
+  registerForeground,
+  onTerminated as onAgentTerminated,
+  onEvicted as onAgentEvicted,
+} from "@/lib/events/bus";
+import { pipeSessionId } from "@/lib/events/types";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { useSettings, ChatMessage, ChatConversation } from "@/lib/hooks/use-settings";
 import { cn } from "@/lib/utils";
-import { Loader2, Send, Square, User, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, Filter, RefreshCw, GitBranch, MoreHorizontal, Pencil, Shield, ShieldCheck } from "lucide-react";
+import { Loader2, Send, Square, User, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, Filter, RefreshCw, GitBranch, MoreHorizontal, Pencil, Pin, Shield, ShieldCheck } from "lucide-react";
 import { SchedulePromptDialog } from "@/components/chat/schedule-prompt-dialog";
+import { PipeContextBanner } from "@/components/chat/pipe-context-banner";
+import { BrowserSidebar } from "@/components/browser-sidebar";
 import { toast } from "@/components/ui/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
 import { PipeAIIcon, PipeAIIconLarge } from "@/components/pipe-ai-icon";
@@ -33,6 +42,7 @@ import { writeTextFile, readFile } from "@tauri-apps/plugin-fs";
 import { commands } from "@/lib/utils/tauri";
 import { emit } from "@tauri-apps/api/event";
 import { useChatConversations } from "@/components/hooks/use-chat-conversations";
+import { useChatStore } from "@/lib/stores/chat-store";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { usePlatform } from "@/lib/hooks/use-platform";
@@ -1052,6 +1062,174 @@ function CollapsibleUserMessage({ label, fullContent }: { label: string; fullCon
   );
 }
 
+/**
+ * Title + actions for the current chat. Click → menu with Rename
+ * (inline edit), Pin, Delete. Renders nothing for empty chats (no user
+ * message yet) — there's no useful title and the actions are no-ops
+ * for something that doesn't exist on disk.
+ */
+function ChatTitleMenu({
+  conversationId,
+  messages,
+  renameConversation,
+  deleteConversation,
+  startNewConversation,
+}: {
+  conversationId: string | null;
+  messages: Message[];
+  renameConversation: (id: string, title: string) => Promise<void> | void;
+  deleteConversation: (id: string) => Promise<void> | void;
+  startNewConversation: (id?: string) => Promise<void> | void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Title source order:
+  //   1. The session's title from the chat-store (in-memory, freshest;
+  //      reflects user renames immediately).
+  //   2. The first user message, truncated. Matches the auto-derive
+  //      logic in saveConversation so what the menu shows is what
+  //      will end up on disk.
+  // Hide the menu entirely when neither source has anything — the
+  // chat is brand new and the actions don't apply yet.
+  const storeTitle = useChatStore((s) =>
+    conversationId ? s.sessions[conversationId]?.title : undefined
+  );
+  const session = useChatStore((s) =>
+    conversationId ? s.sessions[conversationId] : undefined
+  );
+  const isPinned = session?.pinned ?? false;
+  const firstUserMsg = messages.find((m) => m.role === "user");
+  const derivedTitle = firstUserMsg?.content?.slice(0, 50);
+  const title =
+    storeTitle && storeTitle !== "new chat" && storeTitle !== "untitled"
+      ? storeTitle
+      : derivedTitle || "";
+
+  // No conversation id OR no real content → don't render. The "+ New"
+  // button on the right is enough; no point showing actions for a
+  // nothing-chat.
+  if (!conversationId || !title) return null;
+
+  const handleStartRename = () => {
+    setDraft(title);
+    setRenaming(true);
+    setOpen(false);
+    // Focus on next tick once the input is in the DOM.
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+  const commitRename = async () => {
+    const next = draft.trim();
+    setRenaming(false);
+    if (!next || next === title) return;
+    try {
+      await renameConversation(conversationId, next);
+      // Mirror to the in-memory store so the sidebar reflects the
+      // change without waiting for the next disk hydration cycle.
+      useChatStore.getState().actions.patch(conversationId, { title: next });
+    } catch (e) {
+      console.warn("[chat] rename failed:", e);
+    }
+  };
+  const handleTogglePin = async () => {
+    setOpen(false);
+    const next = !isPinned;
+    useChatStore.getState().actions.togglePinned(conversationId);
+    try {
+      const { updateConversationFlags } = await import("@/lib/chat-storage");
+      await updateConversationFlags(conversationId, { pinned: next });
+    } catch {
+      // best-effort persistence
+    }
+  };
+  const handleDelete = async () => {
+    setOpen(false);
+    if (!confirm("Delete this chat? This cannot be undone.")) return;
+    try {
+      await deleteConversation(conversationId);
+      useChatStore.getState().actions.drop(conversationId);
+      // Land the user on a fresh chat — the panel was rendering the
+      // one we just deleted.
+      await startNewConversation();
+    } catch (e) {
+      console.warn("[chat] delete failed:", e);
+    }
+  };
+
+  if (renaming) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            void commitRename();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            setRenaming(false);
+          }
+        }}
+        onBlur={() => void commitRename()}
+        className="relative z-10 h-7 px-2 max-w-[260px] text-xs font-medium bg-background border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-foreground/30"
+      />
+    );
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen((o) => !o);
+          }}
+          className="relative z-10 inline-flex items-center gap-1 max-w-[260px] h-7 px-2 rounded-md text-xs font-medium text-foreground hover:bg-muted/50 transition-colors"
+          title="Chat options"
+        >
+          <span className="truncate">{title}</span>
+          <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-44 p-1"
+        align="start"
+        side="bottom"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <button
+          className="w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md hover:bg-muted text-left"
+          onClick={handleStartRename}
+        >
+          <Pencil className="h-3.5 w-3.5 shrink-0" />
+          Rename
+        </button>
+        <button
+          className="w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md hover:bg-muted text-left"
+          onClick={() => void handleTogglePin()}
+        >
+          <Pin className="h-3.5 w-3.5 shrink-0" />
+          {isPinned ? "Unpin" : "Pin"}
+        </button>
+        <div className="my-1 border-t border-border" />
+        <button
+          className="w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded-md hover:bg-muted text-destructive text-left"
+          onClick={() => void handleDelete()}
+        >
+          <Trash2 className="h-3.5 w-3.5 shrink-0" />
+          Delete
+        </button>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function StandaloneChat({
   className,
   hideInlineHistory,
@@ -1234,7 +1412,15 @@ export function StandaloneChat({
   const piLastCrashRef = useRef(0);
   const piThinkingStartRef = useRef<number | null>(null);
   const piSessionSyncedRef = useRef(false);
-  const piSessionIdRef = useRef<string>(crypto.randomUUID());
+  // Initial Pi session id. The chat panel's foreground bus registration
+  // is keyed by `conversationId`, and Pi emits events with
+  // `sessionId === piSessionIdRef.current`. Keep them in lockstep from
+  // mount so the panel's foreground handler receives events even on the
+  // very first message of a fresh app launch (no chat selected, no
+  // history loaded). Same invariant as `startNewConversation` /
+  // `loadConversation` — see use-chat-conversations.ts.
+  const initialSessionIdRef = useRef<string>(crypto.randomUUID());
+  const piSessionIdRef = useRef<string>(initialSessionIdRef.current);
   // Tracks the config Pi is currently running with so `handlePiRestart` can
   // decide between a hot-swap (`pi_set_model`) and a full respawn. Update
   // this ref on every Pi start/restart/swap.
@@ -1265,8 +1451,24 @@ export function StandaloneChat({
   // Bypass guard for auto-send from chat-prefill (Pi confirmed running but React state stale)
   const autoSendBypassRef = useRef(false);
 
-  // Chat history state
-  const [conversationId, setConversationId] = useState<string | null>(null);
+  // Forwarding ref for the per-event handler. Updated whenever the
+  // listener-setup useEffect runs so foreground bus registrations can
+  // dispatch through the latest closure without a re-registration on
+  // every render. The function itself is created inside that effect
+  // (it closes over local state setters and refs); routing through a
+  // ref avoids an expensive re-extraction.
+  const handleAgentEventDataRef = useRef<((data: any) => void) | null>(null);
+  // True until the component unmounts. Used by bus handlers to avoid
+  // touching React state after unmount; equivalent to the per-effect
+  // `mounted` flag but visible across all useEffect boundaries.
+  const mountedRef = useRef(true);
+
+  // Chat history state. Initialised to the same uuid as
+  // `piSessionIdRef` so the foreground bus key matches Pi's emitted
+  // sessionId from message 0 — see comment above piSessionIdRef.
+  const [conversationId, setConversationId] = useState<string | null>(
+    initialSessionIdRef.current,
+  );
 
   // Process an image file to base64
   // Resize image to max 1024px and compress as JPEG to keep base64 payload small
@@ -1574,15 +1776,21 @@ export function StandaloneChat({
             setIsLoading(false);
             setIsStreaming(false);
             setMessages([]);
-            setConversationId(null);
             setPrefillContext(null);
             setPrefillFrameId(null);
             // Set input as fallback in case auto-send fails
             setInput(fullMessage);
             // Assign a fresh session ID — this is a brand-new conversation.
             // Without this, the prefill would send to the previous conversation's
-            // Pi process which still has old context baked in.
-            piSessionIdRef.current = crypto.randomUUID();
+            // Pi process which still has old context baked in. Set
+            // conversationId to the same value so the foreground bus key
+            // tracks Pi's emitted sessionId — see comment on
+            // initialSessionIdRef. Skipping setConversationId(null) here so
+            // there's no transient null-key window where Pi events could miss
+            // the panel's foreground handler.
+            const newSid = crypto.randomUUID();
+            piSessionIdRef.current = newSid;
+            setConversationId(newSid);
             piSessionSyncedRef.current = true; // fresh session, no history to inject
             // With multi-session, Pi starts fresh per conversation — sendPiMessage
             // handles auto-starting it. Just bypass the canChat guard and send.
@@ -1631,26 +1839,73 @@ export function StandaloneChat({
   // not, treat it as "start a new chat using THIS id" — the caller (e.g.
   // the sidebar's + new chat button) generated the id and wants the chat
   // panel to adopt it so both agree on the session id from message 1.
+  // CRITICAL: the listener registers ONCE (deps: []) but the functions
+  // it calls (loadConversation, startNewConversation) close over `messages`
+  // and other state from useChatConversations. If we called the functions
+  // directly here, the listener would forever invoke the FIRST render's
+  // versions — which captured `messages = []` at mount time. Every
+  // snapshot-on-switch would then write empty messages to the store, and
+  // the chat that "should be there when you click back" would actually be
+  // wiped. Route through refs that we update on every render so the
+  // listener always invokes the freshest closure.
+  const loadConversationRef = useRef(loadConversation);
+  const startNewConversationRef = useRef(startNewConversation);
+  loadConversationRef.current = loadConversation;
+  startNewConversationRef.current = startNewConversation;
+
   useEffect(() => {
     const unlisten = listen<{ conversationId: string }>("chat-load-conversation", async (event) => {
       const { conversationId: convId } = event.payload;
       const { loadConversationFile } = await import("@/lib/chat-storage");
+      const { useChatStore } = await import("@/lib/stores/chat-store");
+
+      // 0) Already on this conversation — skip the snapshot+swap. The
+      //    page-level listener handles navigation back to home; we
+      //    just make sure currentId reflects the panel so the sidebar
+      //    re-highlights the row. Without this short-circuit, clicking
+      //    the already-loaded chat from a non-home section would
+      //    snapshot+reset+rehydrate the same id and briefly blank the
+      //    panel.
+      if (convId === piSessionIdRef.current) {
+        useChatStore.getState().actions.setCurrent(convId);
+        emit("chat-current-session", { id: convId });
+        return;
+      }
+
+      // 1) Disk first — saved conversations are the canonical source.
       const conv = await loadConversationFile(convId);
       if (conv) {
-        loadConversation(conv);
-      } else {
-        // Unknown id → start a new chat that adopts the requested id so
-        // sidebar + chat (and the chat-store's currentId) all agree from
-        // message 0. Pass the id directly into startNewConversation
-        // instead of overriding piSessionIdRef after the fact — the
-        // override pattern left store.currentId stuck on the throwaway
-        // uuid that startNewConversation had generated, which made the
-        // router treat the new id as a background session and the
-        // sidebar lose its highlight until the user typed.
-        await startNewConversation(convId);
-        // Mirror the new id back to the sidebar so its currentId matches.
-        emit("chat-current-session", { id: convId });
+        loadConversationRef.current(conv);
+        return;
       }
+
+      // 2) Store fallback — the conversation may exist only in memory
+      //    because it was started in this session and hasn't completed
+      //    a turn yet (no agent_end → no save). Without this branch,
+      //    clicking back to a chat that's been streaming in the
+      //    background would fall through to startNewConversation and
+      //    silently WIPE the in-memory state.
+      const session = useChatStore.getState().sessions[convId];
+      if (session?.messages && session.messages.length > 0) {
+        // Stub conversation — loadConversation prefers store messages
+        // over the conv arg whenever the store has them, so the empty
+        // messages array here is just a satisfaction of the type.
+        loadConversationRef.current({
+          id: convId,
+          title: session.title || "untitled",
+          messages: [],
+          createdAt: Date.now(),
+          updatedAt: session.updatedAt,
+        });
+        return;
+      }
+
+      // 3) Truly new id (sidebar's "+ new chat" path) — adopt the
+      //    requested id so sidebar + chat (and the chat-store's
+      //    currentId) all agree from message 0.
+      await startNewConversationRef.current(convId);
+      // Mirror the new id back to the sidebar so its currentId matches.
+      emit("chat-current-session", { id: convId });
     });
     return () => { unlisten.then((fn) => fn()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1660,30 +1915,148 @@ export function StandaloneChat({
   // assigns or resumes a session id. Without this the sidebar wouldn't
   // know about session changes initiated inside the chat (in-panel "new",
   // chat-prefill auto-send, history pick from the in-panel history view).
+  // Also mirror to chat-store.panelSessionId so the home page can restore
+  // the sidebar highlight when the user navigates back from a non-chat
+  // section without us emitting an event.
   useEffect(() => {
     if (!conversationId) return;
     emit("chat-current-session", { id: conversationId });
+    useChatStore.getState().actions.setPanelSession(conversationId);
   }, [conversationId]);
+
+  // Component-lifetime guard for bus handlers that fire across the
+  // longer-lived useEffects (terminated, foreground registrations).
+  // Useful because the panel's per-effect `mounted` flags are scoped
+  // to their own effects.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // Foreground registration on the agent-event bus. Switches with
+  // `conversationId` so the bus always knows exactly one panel owns
+  // events for the current chat. The router's exclusive routing means
+  // we don't have to filter by sessionId in the handler — the bus
+  // delivers only events whose envelope sessionId matches the
+  // registration key.
+  //
+  // This is also where pipe-watch sessions register: initWatch swaps
+  // conversationId to a `pipe:<name>:<execId>` id, so this effect
+  // re-runs and registers the panel as the foreground owner of pipe
+  // stdout. Switching to a chat unregisters the pipe foreground (via
+  // the cleanup) and registers the chat — pipe events naturally stop
+  // reaching the panel and start hitting the pipe-run-recorder
+  // instead, which is what we want.
+  // Pipe-watch sessions don't register foreground — pipe-watch-writer
+  // is the sole writer for them, panel mirrors store messages below.
+  // We grab `kind` synchronously here (not via the Zustand selector) so
+  // the effect re-runs on conversationId change without an extra render
+  // cycle that could miss the foreground registration window for chats.
+  useEffect(() => {
+    if (!conversationId) return;
+    const kind = useChatStore.getState().sessions[conversationId]?.kind;
+    if (kind === "pipe-watch") return;
+    let cancelled = false;
+    let off: (() => void) | null = null;
+    (async () => {
+      await mountAgentEventBus();
+      if (cancelled) return;
+      off = registerForeground(conversationId, (envelope) => {
+        if (!mountedRef.current) return;
+        handleAgentEventDataRef.current?.(envelope.event);
+      });
+    })();
+    return () => {
+      cancelled = true;
+      try { off?.(); } catch { /* ignore */ }
+    };
+  }, [conversationId]);
+
+  // Mirror chat-store messages into local React state when the panel is
+  // showing a pipe-watch session. The writer is the source of truth;
+  // this hook makes the existing render path (which reads `messages`)
+  // pick up writer updates without forking the rendering code.
+  const pipeWatchMessages = useChatStore((s) =>
+    conversationId && s.sessions[conversationId]?.kind === "pipe-watch"
+      ? s.sessions[conversationId]?.messages
+      : undefined,
+  );
+  useEffect(() => {
+    if (!pipeWatchMessages) return;
+    setMessages(pipeWatchMessages as any);
+  }, [pipeWatchMessages, setMessages]);
+
+  // Mirror isLoading / isStreaming from the store for pipe-watch
+  // sessions. Without this the panel's "writing…" indicator strands
+  // forever once the pipe finishes — the writer flips the flags in the
+  // store on agent_end, but the panel's local React state was set to
+  // true at initWatch and never gets cleared (no foreground bus
+  // registration → no panel-side terminal handler runs).
+  // Two scalar selectors instead of one returning {isLoading,isStreaming}
+  // — Zustand's shallow-equal would re-render every store mutation if
+  // the selector built a fresh object each call.
+  const pipeWatchIsLoading = useChatStore((s) => {
+    if (!conversationId) return undefined;
+    const sess = s.sessions[conversationId];
+    if (sess?.kind !== "pipe-watch") return undefined;
+    return !!sess.isLoading;
+  });
+  const pipeWatchIsStreaming = useChatStore((s) => {
+    if (!conversationId) return undefined;
+    const sess = s.sessions[conversationId];
+    if (sess?.kind !== "pipe-watch") return undefined;
+    return !!sess.isStreaming;
+  });
+  useEffect(() => {
+    if (pipeWatchIsLoading !== undefined) setIsLoading(pipeWatchIsLoading);
+    if (pipeWatchIsStreaming !== undefined) setIsStreaming(pipeWatchIsStreaming);
+  }, [pipeWatchIsLoading, pipeWatchIsStreaming]);
+
+  // Keep the pipe-context banner in sync with the current session.
+  // When the panel switches AWAY from a pipe-watch session (user
+  // clicks a chat), `activePipeExecution` would otherwise stay set
+  // and the banner would render on top of the chat. Reading the
+  // current session record's kind / pipeContext gives us a single
+  // source of truth tied to conversationId.
+  const currentSessionKind = useChatStore((s) =>
+    s.currentId ? s.sessions[s.currentId]?.kind : undefined,
+  );
+  const currentSessionPipeContext = useChatStore((s) =>
+    s.currentId ? s.sessions[s.currentId]?.pipeContext : undefined,
+  );
+  useEffect(() => {
+    if (currentSessionKind === "pipe-watch" && currentSessionPipeContext) {
+      setActivePipeExecution({
+        name: currentSessionPipeContext.pipeName,
+        executionId: currentSessionPipeContext.executionId,
+      });
+    } else {
+      setActivePipeExecution(null);
+    }
+  }, [currentSessionKind, currentSessionPipeContext?.pipeName, currentSessionPipeContext?.executionId]);
 
   // If the Pi pool evicted the session we're currently viewing, swap the
   // panel to a fresh one. The pool only evicts idle sessions (see
   // pi.rs::pi_start_inner), so this is rare — but when it does happen the
   // user shouldn't be left with a panel pointing at a dead pid.
   useEffect(() => {
-    let unlistenFn: (() => void) | undefined;
     let cancelled = false;
+    let off: (() => void) | null = null;
     (async () => {
-      const u = await listen<{ session: string }>("pi_session_evicted", async (event) => {
+      await mountAgentEventBus();
+      if (cancelled) return;
+      off = onAgentEvicted(async (payload) => {
         if (cancelled) return;
-        if (event.payload.session !== piSessionIdRef.current) return;
-        await startNewConversation();
+        if (payload.sessionId !== piSessionIdRef.current) return;
+        await startNewConversationRef.current();
         emit("chat-current-session", { id: piSessionIdRef.current });
       });
-      unlistenFn = u;
     })();
     return () => {
       cancelled = true;
-      unlistenFn?.();
+      try { off?.(); } catch { /* ignore */ }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1698,7 +2071,7 @@ export function StandaloneChat({
         const { loadConversationFile } = await import("@/lib/chat-storage");
         const conv = await loadConversationFile(pendingId);
         if (conv) {
-          loadConversation(conv);
+          loadConversationRef.current(conv);
         }
       })();
     }
@@ -2139,14 +2512,32 @@ export function StandaloneChat({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.user?.token]);
 
-  // Listen for Pi events (all providers route through Pi) and pipe events
+  // Listen for Pi / pipe events.
+  //
+  // Stage 3 of the events refactor: the panel registers with the
+  // agent-event bus instead of subscribing to legacy Tauri topics
+  // directly. Foreground registration is exclusive — the bus routes
+  // events for the registered sessionId to this handler and skips the
+  // background router. See `lib/events/bus.ts`.
+  //
+  // The panel may hold up to two foreground registrations at once:
+  //   - one for the chat session (`conversationId`), bound below in a
+  //     dedicated useEffect that re-registers on every session switch
+  //   - one for a synthetic pipe id (`pipe:<name>:<execId>`) when the
+  //     user is actively watching a pipe — bound inside `initWatch`
+  //     and released on watch end
+  //
+  // The shared `handleAgentEventDataRef` lets both registrations
+  // dispatch through the same event-handling switch without forcing a
+  // costly re-extraction every time the closure changes.
   useEffect(() => {
-    let unlistenEvent: UnlistenFn | null = null;
-    let unlistenPipeEvent: UnlistenFn | null = null;
-    let unlistenTerminated: UnlistenFn | null = null;
     let unlistenLog: UnlistenFn | null = null;
     let unlistenReauth: UnlistenFn | null = null;
     let mounted = true;
+    // Bus registrations to release on cleanup. Mixed with the legacy
+    // unlisten handles below so the cleanup section drains them
+    // uniformly.
+    const busUnregistrations: Array<() => void> = [];
 
     // Shared handler for Pi event data — used by both pi_event and pipe_event
     const handlePiEventData = (data: any) => {
@@ -2574,7 +2965,9 @@ export function StandaloneChat({
             error_type: errorCategory,
           });
           piStreamingTextRef.current = "";
-          if (piMessageIdRef.current?.startsWith("pipe-")) setActivePipeExecution(null);
+          if (piMessageIdRef.current?.startsWith("pipe-")) {
+            setActivePipeExecution(null);
+          }
           piMessageIdRef.current = null;
           piContentBlocksRef.current = [];
           setIsLoading(false);
@@ -2600,30 +2993,24 @@ export function StandaloneChat({
         }
       };
 
+    // Publish the current handler to the forwarding ref so foreground
+    // registrations (chat + pipe-watch) dispatch through the same
+    // closure without re-binding.
+    handleAgentEventDataRef.current = handlePiEventData;
+
     const setup = async () => {
-      unlistenEvent = await listen<any>("pi_event", (event) => {
-        if (!mounted) return;
-        const { sessionId, event: piEvent } = event.payload;
-        if (sessionId !== piSessionIdRef.current) return;
-        handlePiEventData(piEvent);
-      });
+      // Ensure the bus's Tauri listener is up before any consumer
+      // (router, panel, pipes hook) starts registering. Idempotent.
+      await mountAgentEventBus();
 
-      // Listen for pipe execution events (only when actively watching a pipe)
-      unlistenPipeEvent = await listen<any>("pipe_event", (event) => {
+      // Termination — broadcast event, filter by current session id.
+      // Replaces the prior `listen("pi_terminated", ...)`. The bus
+      // mirrors `agent_terminated`; legacy `pi_terminated` is a Stage 5
+      // cleanup target.
+      busUnregistrations.push(onAgentTerminated((payload) => {
         if (!mounted) return;
-        // Only process events for the pipe we're actively watching
-        if (!piMessageIdRef.current?.startsWith("pipe-")) return;
-        const payload = event.payload;
-        const piEvent = payload?.event;
-        if (!piEvent) return;
-
-        handlePiEventData(piEvent);
-      });
-
-      unlistenTerminated = await listen<any>("pi_terminated", (event) => {
-        if (!mounted) return;
-        const { sessionId, pid: terminatedPid } = event.payload;
-        if (sessionId !== piSessionIdRef.current) return;
+        if (payload.sessionId !== piSessionIdRef.current) return;
+        const terminatedPid = payload.pid;
         if (piStoppedIntentionallyRef.current) {
           piStoppedIntentionallyRef.current = false;
           return;
@@ -2715,7 +3102,7 @@ export function StandaloneChat({
             }
           }
         }, delay);
-      });
+      }));
       // Listen for Pi stderr — only surface errors when user is actively waiting for a response
       unlistenLog = await listen<string>("pi_log", (event) => {
         if (!mounted) return;
@@ -2775,9 +3162,9 @@ export function StandaloneChat({
 
     return () => {
       mounted = false;
-      unlistenEvent?.();
-      unlistenPipeEvent?.();
-      unlistenTerminated?.();
+      for (const off of busUnregistrations) {
+        try { off(); } catch { /* ignore — tearing down */ }
+      }
       unlistenLog?.();
       unlistenReauth?.();
       // Abort any in-flight Pi request when navigating away from chat.
@@ -2793,7 +3180,7 @@ export function StandaloneChat({
     let watchPollTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Poll execution API to check if pipe already finished (race condition fix)
-    const pollExecutionStatus = async (pipeName: string, executionId: number, msgId: string) => {
+    const pollExecutionStatus = async (pipeName: string, executionId: number, pipeSid: string) => {
       try {
         const res = await localFetch(`/pipes/${pipeName}/executions?limit=20`);
         if (!res.ok) return;
@@ -2801,52 +3188,38 @@ export function StandaloneChat({
         const exec = (data.data || []).find((e: any) => e.id === executionId);
         if (!exec) return;
 
-        // If execution is already done (completed/failed/timed_out), show the result
+        // Pipe already finished before live events could reach the writer
+        // (race between pipe completion and bus mount). Reconstruct the
+        // conversation from stdout and write it directly to chat-store —
+        // the panel mirrors store messages for pipe-watch sessions, so
+        // this surfaces the result without a separate render path.
         if (exec.status !== "running") {
-          // Parse stdout to extract assistant text (same logic as cleanPipeStdout)
-          let output = "";
-          if (exec.stdout) {
-            const parts: string[] = [];
-            for (const line of exec.stdout.split("\n")) {
-              if (!line.trim()) continue;
-              try {
-                const evt = JSON.parse(line);
-                if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
-                  parts.push(evt.delta.text);
-                } else if ((evt.type === "message_start" || evt.type === "message_end") &&
-                           evt.message?.role === "assistant") {
-                  for (const c of evt.message?.content || []) {
-                    if (c.type === "text" && c.text) parts.push(c.text);
-                  }
-                }
-              } catch {}
-            }
-            output = parts.join("").trim();
+          const { parsePipeNdjsonToMessages } = await import(
+            "@/lib/pipe-ndjson-to-chat"
+          );
+          let messagesFromStdout = exec.stdout
+            ? parsePipeNdjsonToMessages(exec.stdout)
+            : [];
+          if (messagesFromStdout.length === 0) {
+            const fallback =
+              exec.status === "failed"
+                ? `Pipe failed: ${exec.error_message || exec.stderr || "unknown error"}`
+                : "Pipe completed with no output.";
+            messagesFromStdout = [
+              {
+                id: `pipe-poll-${executionId}`,
+                role: "assistant",
+                content: fallback,
+                timestamp: Date.now(),
+              } as any,
+            ];
           }
-
-          if (!output && exec.status === "failed") {
-            output = `Pipe failed: ${exec.error_message || exec.stderr || "unknown error"}`;
-          } else if (!output) {
-            output = "Pipe completed with no output.";
+          const store = useChatStore.getState();
+          if (store.sessions[pipeSid]) {
+            store.actions.setMessages(pipeSid, messagesFromStdout as any);
+            store.actions.endTurn(pipeSid);
           }
-
-          // Only update if we're still watching this pipe
-          if (piMessageIdRef.current === msgId) {
-            piStreamingTextRef.current = output;
-            setMessages((prev) =>
-              prev.map((m) => m.id === msgId ? { ...m, content: output } : m)
-            );
-            // Clean up watch state
-            piStreamingTextRef.current = "";
-            piMessageIdRef.current = null;
-            piContentBlocksRef.current = [];
-            piLastErrorRef.current = null;
-            piThinkingStartRef.current = null;
-            setActivePipeExecution(null);
-            setIsLoading(false);
-            setIsStreaming(false);
-          }
-          return true; // done
+          return true;
         }
         return false; // still running
       } catch {
@@ -2854,7 +3227,7 @@ export function StandaloneChat({
       }
     };
 
-    const initWatch = (pipeName: string, executionId: number, presetId?: string | null) => {
+    const initWatch = async (pipeName: string, executionId: number, presetId?: string | null) => {
       setActivePipeExecution({ name: pipeName, executionId });
 
       // Apply the pipe's AI preset so the chat header reflects it
@@ -2863,60 +3236,92 @@ export function StandaloneChat({
         if (match) setActivePreset(match);
       }
 
-      const msgId = `pipe-${pipeName}-${executionId}`;
-      piStreamingTextRef.current = "";
-      piContentBlocksRef.current = [];
-      piThinkingStartRef.current = null;
-      piMessageIdRef.current = msgId;
-      setMessages((prev) => {
-        if (prev.some((m) => m.id === msgId)) return prev;
-        return [
-          ...prev,
-          {
-            id: `pipe-user-${executionId}`,
-            role: "user" as const,
-            content: `Watching pipe: ${pipeName}`,
-            timestamp: Date.now(),
-          },
-          {
-            id: msgId,
-            role: "assistant" as const,
-            content: "",
-            timestamp: Date.now(),
-            contentBlocks: [],
-          },
-        ];
-      });
-      setIsStreaming(true);
+      const pipeSid = pipeSessionId(pipeName, executionId);
 
-      // Poll immediately in case execution already finished before we started listening
-      // Then poll every 3s as a fallback if streaming events are missed
+      // Pipe-watch is a real session (kind: "pipe-watch"). The writer
+      // (`pipe-watch-writer`) is the sole authority for its message
+      // content — it implicit-creates messages on first content event
+      // and prefers `agent_end`'s authoritative messages array on
+      // terminal events. We upsert the session record synchronously
+      // here so the writer can identify the sid as kind=pipe-watch
+      // for any events that arrive between this call and
+      // loadConversation finishing its async setup.
+      const startedAt = new Date().toISOString();
+      const storeNow = useChatStore.getState();
+      if (!storeNow.sessions[pipeSid]) {
+        storeNow.actions.upsert({
+          id: pipeSid,
+          title: pipeName,
+          preview: "",
+          status: "streaming",
+          messageCount: 0,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          pinned: false,
+          unread: false,
+          kind: "pipe-watch",
+          pipeContext: { pipeName, executionId, startedAt },
+          isLoading: true,
+          isStreaming: true,
+        });
+      }
+
+      const pipeConv: ChatConversation = {
+        id: pipeSid,
+        title: pipeName,
+        // No placeholder — the writer creates the first message on the
+        // first real content event. Until then the panel shows a
+        // loading indicator (isLoading=true) which matches the visual
+        // we want during pipe startup.
+        messages: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        kind: "pipe-watch",
+        pipeContext: { pipeName, executionId, startedAt },
+      };
+      await loadConversationRef.current(pipeConv);
+
+      // No piMessageIdRef setup — the writer owns message lifecycle
+      // for pipe-watch. The local refs stay null/empty so the chat
+      // panel's chat-shaped event handlers (which only fire if
+      // foreground is registered, which it isn't for pipe-watch)
+      // can't accidentally write to a stale placeholder id.
+      setIsStreaming(true);
+      setIsLoading(true);
+
+      // Poll the executions API as a safety net — catches the case
+      // where the pipe finished BEFORE we mounted the foreground bus
+      // registration (the events fired and went to the recorder, not
+      // here). Once the live agent_event stream has had a chance to
+      // arrive, this poll has done its job; the live stream is the
+      // authoritative source for in-progress runs.
+      //
+      // Bug fix (2026-04-26): the previous version tore down the watch
+      // after 30s "timeout" — clearing activePipeExecution, unregistering
+      // the foreground, and nulling piMessageIdRef. For pipes that take
+      // longer than 30s this would silently (a) hide the banner, (b)
+      // strand the thinking indicator at isThinking:true, and (c) drop
+      // every subsequent live event on the floor because piMessageIdRef
+      // was null. Now we just stop polling — the watch stays alive and
+      // is driven by live events to completion.
       let pollCount = 0;
-      const maxPolls = 10; // 30s max (10 * 3s)
+      const maxPolls = 10; // 30s of safety-net polling
       const doPoll = async () => {
-        if (piMessageIdRef.current !== msgId) return; // no longer watching
-        const done = await pollExecutionStatus(pipeName, executionId, msgId);
+        // Stop polling if the user navigated to a different chat. The
+        // writer still accumulates events for this sid in the
+        // background — we just don't need the poll fallback once we're
+        // not actively viewing.
+        if (piSessionIdRef.current !== pipeSid) return;
+        const done = await pollExecutionStatus(pipeName, executionId, pipeSid);
         if (done) {
           watchPollTimer = null;
           return;
         }
         pollCount++;
         if (pollCount >= maxPolls) {
-          // Timeout — give up watching, show what we have
-          if (piMessageIdRef.current === msgId) {
-            const content = piStreamingTextRef.current || "Pipe is still running — check execution history for results.";
-            setMessages((prev) =>
-              prev.map((m) => m.id === msgId ? { ...m, content } : m)
-            );
-            piStreamingTextRef.current = "";
-            piMessageIdRef.current = null;
-            piContentBlocksRef.current = [];
-            piLastErrorRef.current = null;
-            piThinkingStartRef.current = null;
-            setActivePipeExecution(null);
-            setIsLoading(false);
-            setIsStreaming(false);
-          }
+          // Safety-net budget exhausted. The pipe is running and live
+          // events are doing their job — no teardown here. The watch
+          // ends when agent_end / pipe_done arrives via the bus.
           watchPollTimer = null;
           return;
         }
@@ -3113,6 +3518,56 @@ export function StandaloneChat({
     if (inputRef.current) inputRef.current.style.height = "auto";
     setIsLoading(true);
     setIsStreaming(true);
+
+    // Mirror the user message + assistant placeholder DIRECTLY into the
+    // chat-store, synchronously. The snapshot-on-switch path reads
+    // `messages` from the React closure, which lags behind setMessages
+    // by one render cycle (React batches). If the user clicks "+ new
+    // chat" in that gap, the snapshot writes stale messages (without
+    // the freshly-sent user message) to the store. Then the router
+    // takes over for the now-backgrounded session and only knows about
+    // assistant deltas — the user comes back and sees the assistant
+    // reply with no preceding user message. By writing both messages
+    // here, the store is at least as fresh as the panel and survives
+    // any closure staleness.
+    const sidNow = piSessionIdRef.current;
+    if (sidNow) {
+      const storeState = useChatStore.getState();
+      if (!storeState.sessions[sidNow]) {
+        storeState.actions.upsert({
+          id: sidNow,
+          title: "new chat",
+          preview: "",
+          status: "streaming",
+          messageCount: 0,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          pinned: false,
+          unread: false,
+        });
+      }
+      storeState.actions.appendMessage(sidNow, newUserMessage as any);
+      storeState.actions.appendMessage(sidNow, {
+        id: assistantMessageId,
+        role: "assistant",
+        content: "Processing...",
+        timestamp: Date.now(),
+        model: activePreset?.model,
+        provider: activePreset?.provider,
+      } as any);
+      storeState.actions.setStreaming(sidNow, {
+        streamingMessageId: assistantMessageId,
+        streamingText: "",
+        contentBlocks: [],
+        isStreaming: true,
+        isLoading: true,
+      });
+      // Bump the sort key — sending a message is the one user action
+      // that should pull a chat to the top of the sidebar. Pi-driven
+      // activity (text_delta, agent_end) does NOT bump this; the
+      // sidebar order is otherwise stable.
+      storeState.actions.patch(sidNow, { lastUserMessageAt: Date.now() });
+    }
 
     posthog.capture("chat_message_sent", {
       provider: activePreset?.provider,
@@ -3509,6 +3964,18 @@ export function StandaloneChat({
             <History size={14} />
           </Button>
         )}
+        {/* Chat title + actions menu. Sits left-aligned (after the
+            history toggle) so the New / shortcut chips can stay on
+            the right. Suppressed for empty chats (no user message
+            yet) — there's no useful title to show and rename/delete
+            are meaningless for something that doesn't exist on disk. */}
+        <ChatTitleMenu
+          conversationId={conversationId}
+          messages={messages}
+          renameConversation={renameConversation}
+          deleteConversation={deleteConversation}
+          startNewConversation={startNewConversation}
+        />
         <div className="flex-1" />
         <Button
           variant="default"
@@ -3697,6 +4164,15 @@ export function StandaloneChat({
           }}
         >
         <div className="max-w-4xl mx-auto w-full p-4 space-y-4">
+        {/* Pipe-watch banner — shown when the user clicked through from
+            a running pipe execution. Replaces the prior synthetic
+            "Watching pipe: X" user-bubble sentinel. */}
+        {activePipeExecution && (
+          <PipeContextBanner
+            pipeName={activePipeExecution.name}
+            executionId={activePipeExecution.executionId}
+          />
+        )}
         {messages.length === 0 && !isPreparingPrefill && disabledReason && (!hasPresets || !hasValidModel || needsLogin) && (
           <div className="relative flex flex-col items-center justify-center py-12 space-y-4">
             <div className="relative p-6 rounded-2xl border bg-muted/50 border-border/50">
@@ -3773,6 +4249,8 @@ export function StandaloneChat({
                 "relative flex gap-3 min-w-0",
                 message.role === "user" ? "flex-row-reverse" : "flex-row"
               )}
+              data-testid={`chat-message-${message.role}`}
+              data-message-id={message.id}
             >
               <div
                 className={cn(
@@ -4019,6 +4497,12 @@ export function StandaloneChat({
         </button>
       )}
       </div>
+
+      {/* Agent-controlled embedded browser. Slides in from the right when the
+          agent navigates (or when restoring a chat that has saved state).
+          The actual page is rendered by a Tauri child Webview positioned
+          on top of the placeholder div. */}
+      <BrowserSidebar conversationId={conversationId} />
       </div> {/* End of main content area with history sidebar */}
 
       {/* Input */}

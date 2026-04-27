@@ -601,24 +601,45 @@ pub async fn spawn_screenpipe(
     let server_arc = state.server.clone();
     let capture_arc = state.capture.clone();
 
-    // Pipe output callback
+    // Pipe output callback. Stage 5: legacy `pipe_event` topic dropped.
+    // Every pipe stdout line is emitted on the unified `agent_event`
+    // topic with sessionId `pipe:<name>:<execId>` (see the matching
+    // helper in `apps/screenpipe-app-tauri/lib/events/types.ts`).
     let app_for_pipe = app.clone();
+    let app_for_owned = app.clone();
+
+    // Owned-browser: create the connect-side instance and kick off the
+    // webview install in the background. The engine starts immediately;
+    // the handle attaches when the WebviewWindow is ready.
+    let owned_browser = screenpipe_connect::connections::browser::OwnedBrowser::default_instance();
+    {
+        let owned_for_install = owned_browser.clone();
+        let data_dir_for_install = recording_config.data_dir.clone();
+        tauri::async_runtime::spawn(async move {
+            match crate::owned_browser::install(&app_for_owned, data_dir_for_install).await {
+                Ok(handle) => {
+                    owned_for_install.attach(handle).await;
+                    info!("owned-browser ready");
+                }
+                Err(e) => {
+                    warn!("owned-browser install failed: {e} — agent will see ready=false");
+                }
+            }
+        });
+    }
     let on_pipe_output: Option<screenpipe_core::pipes::OnPipeOutputLine> = Some(
         std::sync::Arc::new(move |pipe_name: &str, exec_id: i64, line: &str| {
-            let payload = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
-                serde_json::json!({
-                    "pipeName": pipe_name,
-                    "executionId": exec_id,
-                    "event": parsed,
-                })
+            let inner = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+                parsed
             } else {
-                serde_json::json!({
-                    "pipeName": pipe_name,
-                    "executionId": exec_id,
-                    "event": { "type": "raw_line", "text": line },
-                })
+                serde_json::json!({ "type": "raw_line", "text": line })
             };
-            let _ = app_for_pipe.emit("pipe_event", &payload);
+            let unified = serde_json::json!({
+                "source": "pipe",
+                "sessionId": format!("pipe:{}:{}", pipe_name, exec_id),
+                "event": inner,
+            });
+            let _ = app_for_pipe.emit("agent_event", &unified);
         }),
     );
 
@@ -646,14 +667,17 @@ pub async fn spawn_screenpipe(
 
             server_runtime.block_on(async move {
                 // Phase 1: Start server
-                let server = match ServerCore::start(&recording_config, on_pipe_output).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Failed to start server core: {}", e);
-                        let _ = result_tx.send(Err(e));
-                        return;
-                    }
-                };
+                let server =
+                    match ServerCore::start(&recording_config, on_pipe_output, Some(owned_browser))
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to start server core: {}", e);
+                            let _ = result_tx.send(Err(e));
+                            return;
+                        }
+                    };
 
                 // Phase 2: Start capture
                 let capture = match CaptureSession::start(&server, &recording_config).await {

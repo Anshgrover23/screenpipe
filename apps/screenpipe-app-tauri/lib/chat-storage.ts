@@ -11,7 +11,11 @@ import {
   remove,
   exists,
 } from "@tauri-apps/plugin-fs";
-import type { ChatConversation } from "@/lib/hooks/use-settings";
+import type {
+  ChatConversation,
+  ConversationKind,
+  PipeContext,
+} from "@/lib/hooks/use-settings";
 
 let _chatsDir: string | null = null;
 
@@ -80,6 +84,16 @@ export interface ConversationMeta {
    *  Conversation file is still on disk; only an explicit delete action removes
    *  it. The sidebar filters these out by default. */
   hidden: boolean;
+  /** ms since epoch of the most recent user-sent message. Drives the
+   *  sidebar sort order. Falls back to derive-from-messages on legacy
+   *  files that pre-date the field. */
+  lastUserMessageAt?: number;
+  /** Conversation kind — `chat` for chats, `pipe-watch` / `pipe-run` for
+   *  pipe sessions. Sidebar uses this to split rows into separate
+   *  sections. Older files default to `chat`. */
+  kind: ConversationKind;
+  /** Pipe metadata for `pipe-*` kinds. Undefined for plain chats. */
+  pipeContext?: PipeContext;
 }
 
 export async function listConversations(): Promise<ConversationMeta[]> {
@@ -94,6 +108,18 @@ export async function listConversations(): Promise<ConversationMeta[]> {
     try {
       const text = await readTextFile(`${dir}/${entry.name}`);
       const conv = JSON.parse(text) as ChatConversation;
+      // Derive lastUserMessageAt from messages for files that pre-date
+      // the field on disk. Picks the latest user-role message timestamp.
+      let lastUserMessageAt = conv.lastUserMessageAt;
+      if (lastUserMessageAt == null) {
+        for (const m of conv.messages) {
+          if (m.role === "user" && typeof m.timestamp === "number") {
+            if (lastUserMessageAt == null || m.timestamp > lastUserMessageAt) {
+              lastUserMessageAt = m.timestamp;
+            }
+          }
+        }
+      }
       metas.push({
         id: conv.id,
         title: conv.title,
@@ -102,6 +128,9 @@ export async function listConversations(): Promise<ConversationMeta[]> {
         messageCount: conv.messages.length,
         pinned: conv.pinned === true,
         hidden: conv.hidden === true,
+        lastUserMessageAt,
+        kind: conv.kind ?? "chat",
+        pipeContext: conv.pipeContext,
       });
     } catch {
       // skip corrupt files
@@ -124,7 +153,7 @@ export async function listConversations(): Promise<ConversationMeta[]> {
  */
 export async function updateConversationFlags(
   id: string,
-  patch: Partial<Pick<ChatConversation, "pinned" | "hidden" | "title">>
+  patch: Partial<Pick<ChatConversation, "pinned" | "hidden" | "title" | "browserState">>
 ): Promise<void> {
   const conv = await loadConversationFile(id);
   if (!conv) return;

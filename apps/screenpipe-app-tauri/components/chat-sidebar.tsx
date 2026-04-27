@@ -31,17 +31,21 @@
  * a separate "delete forever" action would unlink the file.
  */
 
-import React, { useEffect, useMemo } from "react";
-import { Pin, X, AlertCircle } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Pin, X, AlertCircle, ChevronDown, ChevronRight, Activity } from "lucide-react";
+import { useRunningPipes } from "@/lib/hooks/use-running-pipes";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import {
   useChatStore,
   useChatActions,
   useOrderedSessions,
+  getOrCreateEmptyChatId,
   type SessionRecord,
 } from "@/lib/stores/chat-store";
 import { updateConversationFlags } from "@/lib/chat-storage";
+import { pipeSessionId } from "@/lib/events/types";
+import { commands } from "@/lib/utils/tauri";
 
 interface ChatSidebarProps {
   className?: string;
@@ -84,30 +88,49 @@ export function ChatSidebar({ className }: ChatSidebarProps) {
     };
   }, [actions]);
 
+  const runningPipes = useRunningPipes();
+
+  // Pipe-watch / pipe-run sessions also rendered in Scheduled get filtered
+  // out here — otherwise the same pipe shows up twice (live row in
+  // Scheduled + duplicate row in Recents). Once the pipe stops running it
+  // drops out of this set and reappears in Recents naturally.
+  const liveScheduledSids = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of runningPipes) {
+      if (p.executionId !== undefined) set.add(pipeSessionId(p.pipeName, p.executionId));
+    }
+    return set;
+  }, [runningPipes]);
+
   const { pinned, recents } = useMemo(() => {
     const p: SessionRecord[] = [];
     const r: SessionRecord[] = [];
-    for (const s of sessions) (s.pinned ? p : r).push(s);
+    for (const s of sessions) {
+      const isPipeKind = s.kind === "pipe-watch" || s.kind === "pipe-run";
+      if (isPipeKind && liveScheduledSids.has(s.id)) continue;
+      (s.pinned ? p : r).push(s);
+    }
     return { pinned: p, recents: r };
-  }, [sessions]);
+  }, [sessions, liveScheduledSids]);
 
   const handleNew = () => {
-    const id = crypto.randomUUID();
-    // Optimistically add the row so the sidebar feels responsive even if
-    // standalone-chat takes a tick to react. The router will pick up the
-    // session if/when Pi starts emitting events for it. Critically, this
-    // runs even when another session is mid-stream — multi-tab is the
-    // whole point, so + new chat must be clickable at all times.
-    actions.upsert({
-      id,
-      title: "new chat",
-      preview: "",
-      status: "idle",
-      messageCount: 0,
-      updatedAt: Date.now(),
-      pinned: false,
-      unread: false,
-    });
+    // Reuse an existing empty chat instead of spawning a fresh one
+    // every time. Spamming "+ new chat" otherwise floods the sidebar
+    // with rows the user never typed in.
+    const { id, isNew } = getOrCreateEmptyChatId();
+    if (isNew) {
+      actions.upsert({
+        id,
+        title: "new chat",
+        preview: "",
+        status: "idle",
+        messageCount: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        pinned: false,
+        unread: false,
+      });
+    }
     actions.setCurrent(id);
     // chat-load-conversation with an unknown id is treated by
     // standalone-chat's listener as "start a new chat with this id" —
@@ -116,13 +139,24 @@ export function ChatSidebar({ className }: ChatSidebarProps) {
   };
 
   const handleSelect = (id: string) => {
-    if (id === currentId) return; // already on it, no-op
+    // No early return for id === currentId. Two reasons:
+    //   1. The user may be on a non-home section (Pipes/Memories/...);
+    //      currentId is cleared in that case, but even if it weren't,
+    //      we want the click to navigate back to home.
+    //   2. The click is the user's "show me this chat" intent — let
+    //      the page-level chat-load-conversation listener flip the
+    //      view; standalone-chat skips the snapshot+swap when the id
+    //      already matches its piSessionIdRef so there's no flicker.
     actions.setCurrent(id);
     emit("chat-load-conversation", { conversationId: id });
   };
 
   const handleClose = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
+    // Abort the Pi process first. Otherwise a still-streaming Pi keeps
+    // emitting events for `id`, and pi-event-router's lazy-create branch
+    // resurrects the row in the sidebar a beat after the user closed it.
+    commands.piAbort(id).catch(() => {});
     actions.drop(id);
     // If the user closed the chat they were viewing, tell standalone-chat
     // to clear the panel. Otherwise the panel would keep showing a
@@ -135,6 +169,7 @@ export function ChatSidebar({ className }: ChatSidebarProps) {
         preview: "",
         status: "idle",
         messageCount: 0,
+        createdAt: Date.now(),
         updatedAt: Date.now(),
         pinned: false,
         unread: false,
@@ -168,62 +203,283 @@ export function ChatSidebar({ className }: ChatSidebarProps) {
     }
   };
 
+  // Layout contract:
+  //   - Scheduled (pipe runs): only renders when something's running;
+  //     own collapsible scroll viewport capped at ~25% so it never
+  //     squeezes recents off-screen.
+  //   - Pinned (chats): non-scrolling. Few rows in practice.
+  //   - Recents: fixed collapsible header; rows fill the rest and
+  //     scroll. flex-1 + min-h-0 is what makes the inner overflow-y-auto
+  //     actually work without leaking past the sidebar bottom.
+  // Collapse state for both Scheduled and Recents persists in
+  // localStorage — "I closed it, leave it closed" across reloads.
   return (
-    // No `h-full`. The wrapper sizes to its CONTENT (sections + rows) but
-    // the inner scroll region caps at `max-h-full` so a 500-row history
-    // doesn't blow past the available sidebar height. Without this, an
-    // earlier `h-full + flex-1` made the scroll viewport always equal to
-    // the parent's flex-1 share — even with 8 rows of content, you could
-    // drag the scrollbar through hundreds of pixels of dead space.
+    // px-2 cancels the parent wrapper's -mx-2 (used to make the
+    // border-t span the full sidebar width). Without this the chat
+    // rows + section headers sit 8px left of the main nav items
+    // (Timeline / Memories / ...) and look misaligned.
     <div
-      className={cn("flex flex-col min-h-0 text-sm", className)}
+      className={cn("flex flex-col min-h-0 text-sm px-2", className)}
       data-testid="chat-sidebar"
     >
-      <div
-        className="overflow-y-auto overflow-x-hidden"
-        style={{ maxHeight: "100%" }}
-      >
-        {pinned.length > 0 && (
-          <Section title="pinned">
-            {pinned.map((s) => (
-              <ChatRow
-                key={s.id}
-                session={s}
-                isCurrent={s.id === currentId}
-                onSelect={handleSelect}
-                onClose={handleClose}
-                onTogglePin={handleTogglePin}
-              />
-            ))}
-          </Section>
-        )}
+      {runningPipes.length > 0 && (
+        <CollapsibleScheduled pipes={runningPipes} />
+      )}
 
-        {/* No "+" action here — the "New chat" item in the main nav
-            (top of the sidebar) is the single new-conversation entry
-            point. Two affordances for the same thing was confusing. */}
-        <Section title="recents">
-          {recents.length === 0 && pinned.length === 0 ? (
-            <div className="px-3 py-2 text-xs text-muted-foreground/70 italic">
-              no chats yet — click + to start
-            </div>
-          ) : recents.length === 0 ? (
-            <div className="px-3 py-2 text-xs text-muted-foreground/70 italic">
-              no recent chats
+      {pinned.length > 0 && (
+        <Section title="pinned">
+          {pinned.map((s) => (
+            <ChatRow
+              key={s.id}
+              session={s}
+              isCurrent={s.id === currentId}
+              onSelect={handleSelect}
+              onClose={handleClose}
+              onTogglePin={handleTogglePin}
+            />
+          ))}
+        </Section>
+      )}
+
+      <CollapsibleRecents
+        empty={recents.length === 0}
+        emptyText={
+          pinned.length === 0
+            ? "no chats yet — click + to start"
+            : "no recent chats"
+        }
+      >
+        {recents.map((s) => (
+          <ChatRow
+            key={s.id}
+            session={s}
+            isCurrent={s.id === currentId}
+            onSelect={handleSelect}
+            onClose={handleClose}
+            onTogglePin={handleTogglePin}
+          />
+        ))}
+      </CollapsibleRecents>
+    </div>
+  );
+}
+
+/** Recents container with a fixed (non-scrolling) header and a
+ *  scrollable body underneath. Click the header to collapse. */
+function CollapsibleRecents({
+  empty,
+  emptyText,
+  children,
+}: {
+  empty: boolean;
+  emptyText: string;
+  children: React.ReactNode;
+}) {
+  const [collapsed, setCollapsedRaw] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("screenpipe:recents-collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const setCollapsed = (v: boolean) => {
+    setCollapsedRaw(v);
+    try {
+      localStorage.setItem("screenpipe:recents-collapsed", String(v));
+    } catch {
+      // ignore — collapse state is best-effort
+    }
+  };
+  return (
+    <div className="flex flex-col flex-1 min-h-0 mb-2">
+      <button
+        type="button"
+        onClick={() => setCollapsed(!collapsed)}
+        className="shrink-0 px-2.5 py-1.5 flex items-center gap-1 hover:bg-muted/30 rounded-md text-left"
+        aria-expanded={!collapsed}
+        aria-controls="chat-sidebar-recents"
+      >
+        {collapsed ? (
+          <ChevronRight className="h-3 w-3 text-muted-foreground/60 shrink-0" />
+        ) : (
+          <ChevronDown className="h-3 w-3 text-muted-foreground/60 shrink-0" />
+        )}
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60">
+          recents
+        </span>
+      </button>
+      {!collapsed && (
+        <div
+          id="chat-sidebar-recents"
+          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-hide"
+        >
+          {empty ? (
+            <div className="px-2.5 py-2 text-xs text-muted-foreground/70 italic">
+              {emptyText}
             </div>
           ) : (
-            recents.map((s) => (
-              <ChatRow
-                key={s.id}
-                session={s}
-                isCurrent={s.id === currentId}
-                onSelect={handleSelect}
-                onClose={handleClose}
-                onTogglePin={handleTogglePin}
-              />
-            ))
+            <div className="flex flex-col">{children}</div>
           )}
-        </Section>
-      </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Scheduled (live pipe runs) container — own collapsible scroll
+ *  viewport capped at ~25% of available height so even with many
+ *  pipes running it never squeezes recents off the screen. Header
+ *  shows the count + a tiny live dot so it's obvious at a glance
+ *  that something is running in the background. */
+function CollapsibleScheduled({
+  pipes,
+}: {
+  pipes: Array<{
+    pipeName: string;
+    title?: string;
+    executionId?: number;
+    startedAt?: string;
+  }>;
+}) {
+  const [collapsed, setCollapsedRaw] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("screenpipe:scheduled-collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const setCollapsed = (v: boolean) => {
+    setCollapsedRaw(v);
+    try {
+      localStorage.setItem("screenpipe:scheduled-collapsed", String(v));
+    } catch {
+      // ignore — collapse state is best-effort
+    }
+  };
+  return (
+    <div className="flex flex-col mb-2 shrink-0">
+      <button
+        type="button"
+        onClick={() => setCollapsed(!collapsed)}
+        className="shrink-0 px-2.5 py-1.5 flex items-center gap-1 hover:bg-muted/30 rounded-md text-left"
+        aria-expanded={!collapsed}
+        aria-controls="chat-sidebar-scheduled"
+      >
+        {collapsed ? (
+          <ChevronRight className="h-3 w-3 text-muted-foreground/60 shrink-0" />
+        ) : (
+          <ChevronDown className="h-3 w-3 text-muted-foreground/60 shrink-0" />
+        )}
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60 flex-1">
+          scheduled
+        </span>
+        {/* Live dot + count — subtle "this section is alive". */}
+        <span
+          className="relative h-2 w-2 shrink-0 flex items-center justify-center"
+          aria-hidden
+        >
+          <span className="absolute inset-0 rounded-full bg-foreground/30 animate-[sp-pulse_1.6s_ease-in-out_infinite]" />
+          <span className="relative h-1.5 w-1.5 rounded-full bg-foreground" />
+        </span>
+        <span className="text-[10px] text-muted-foreground/60 tabular-nums">
+          {pipes.length}
+        </span>
+      </button>
+      {!collapsed && (
+        <div
+          id="chat-sidebar-scheduled"
+          // Cap the scheduled scroll so a long list doesn't take the
+          // whole sidebar. ~max-h-40 ≈ 6 rows; users can scroll within
+          // it. Recents below still gets the rest of the column via
+          // its own flex-1 + min-h-0.
+          className="max-h-40 overflow-y-auto overflow-x-hidden scrollbar-hide"
+        >
+          <div className="flex flex-col">
+            {pipes.map((p) => (
+              <ScheduledRow key={p.pipeName} pipe={p} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatElapsed(startedAt?: string): string | null {
+  if (!startedAt) return null;
+  const ms = Date.now() - Date.parse(startedAt);
+  if (Number.isNaN(ms) || ms < 0) return null;
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
+  if (ms < 3600_000) return `${Math.floor(ms / 60_000)}m`;
+  return `${Math.floor(ms / 3600_000)}h`;
+}
+
+function ScheduledRow({
+  pipe,
+}: {
+  pipe: { pipeName: string; title?: string; startedAt?: string; executionId?: number };
+}) {
+  // Re-render once a minute so the elapsed badge ticks while the row is
+  // mounted. Cheap — at most one timer per visible scheduled pipe and the
+  // section is collapsed by default for many users.
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!pipe.startedAt) return;
+    const id = setInterval(() => force((n) => n + 1), 60_000);
+    return () => clearInterval(id);
+  }, [pipe.startedAt]);
+  const elapsed = formatElapsed(pipe.startedAt);
+  // Click → emit watch_pipe so standalone-chat opens the pipe execution
+  // and starts streaming its output. The page-level listener flips the
+  // active section to home if the user is on Pipes/Memories/etc.
+  const onClick = () => {
+    if (pipe.executionId == null) return;
+    void emit("watch_pipe", {
+      pipeName: pipe.pipeName,
+      executionId: pipe.executionId,
+    });
+  };
+  const interactive = pipe.executionId != null;
+  return (
+    <div
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      onClick={interactive ? onClick : undefined}
+      onKeyDown={
+        interactive
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+      className={cn(
+        "flex items-center gap-2 px-2.5 py-1 mx-0 rounded-md text-foreground select-none",
+        interactive
+          ? "cursor-pointer hover:bg-muted/40"
+          : "cursor-default"
+      )}
+      title={`pipe: ${pipe.pipeName}`}
+      data-testid={`scheduled-row-${pipe.pipeName}`}
+    >
+      {/* Steady live dot — same visual language as chat rows */}
+      <span
+        className="relative h-2 w-2 shrink-0 flex items-center justify-center"
+        aria-label="running"
+      >
+        <span className="absolute inset-0 rounded-full bg-foreground/30 animate-[sp-pulse_1.6s_ease-in-out_infinite]" />
+        <span className="relative h-1.5 w-1.5 rounded-full bg-foreground" />
+      </span>
+      <span className="truncate flex-1 text-xs">
+        {pipe.title || pipe.pipeName}
+      </span>
+      {elapsed && (
+        <span className="text-[10px] text-muted-foreground/60 tabular-nums shrink-0">
+          {elapsed}
+        </span>
+      )}
     </div>
   );
 }
@@ -239,7 +495,7 @@ function Section({
 }) {
   return (
     <div className="mb-2">
-      <div className="px-3 py-1.5 flex items-center justify-between">
+      <div className="px-2.5 py-1.5 flex items-center justify-between">
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60">
           {title}
         </span>
@@ -267,15 +523,18 @@ interface ChatRowProps {
  * (That's why "delete chat doesn't work" — the X click was eaten by the
  * outer button.)
  *
- * Left-side status indicator follows Claude's pattern but uses screenpipe
- * brand:
- *   ●  small filled dot, current/orange + slow pulse  → streaming/thinking/tool
- *   ●  small filled dot, foreground (no pulse)        → unread (new content)
- *   ⚠  alert icon, red                                → error
- *   ○  hollow ring, muted                             → idle (default)
+ * Left-side status indicator — minimalist, monochrome (no brand colors;
+ * screenpipe is black/white):
+ *   ●  filled foreground dot + slow pulse  → streaming/thinking/tool
+ *   ●  filled foreground dot               → unread (new content)
+ *   ⚠  alert icon, red (single exception)  → error
+ *   ○  hollow ring                         → idle (default)
  *
- * Animation is a custom ~1.4s ping that's slower + subtler than Tailwind's
- * default — minimal, not a distraction in your peripheral vision.
+ * Animation is a custom ~1.6s pulse — slow + soft so it sits in the
+ * peripheral vision without pulling focus.
+ *
+ * No preview line below the title. The title alone is what the user
+ * picks chats by; partial Pi tokens leaking into the row read as noise.
  */
 function ChatRow({
   session,
@@ -302,11 +561,11 @@ function ChatRow({
         }
       }}
       className={cn(
-        "group relative flex flex-col items-stretch text-left px-2 py-1 mx-1 rounded-md cursor-pointer select-none",
+        "group relative flex flex-col items-stretch text-left px-2.5 py-1 rounded-md cursor-pointer select-none",
         "transition-colors",
         isCurrent
           ? "bg-muted/70 text-foreground"
-          : "text-foreground/80 hover:bg-muted/40"
+          : "text-foreground hover:bg-muted/40"
       )}
       data-testid={`chat-row-${session.id}`}
       title={isError && session.lastError ? session.lastError : undefined}
@@ -325,9 +584,7 @@ function ChatRow({
             "truncate flex-1 text-xs",
             isUnread
               ? "font-semibold text-foreground"
-              : isCurrent
-                ? "text-foreground"
-                : "text-foreground/80"
+              : "text-foreground"
           )}
         >
           {session.title || "untitled"}
@@ -369,20 +626,6 @@ function ChatRow({
           </button>
         </span>
       </div>
-      {session.preview && (
-        <div
-          className={cn(
-            "text-[10px] truncate mt-0.5 ml-4",
-            isError
-              ? "text-red-500/80"
-              : isLive
-                ? "text-orange-600/80 italic"
-                : "text-muted-foreground/70"
-          )}
-        >
-          {session.preview}
-        </div>
-      )}
     </div>
   );
 }
@@ -414,10 +657,10 @@ function StatusDot({
         className="relative h-2 w-2 shrink-0 flex items-center justify-center"
         aria-label={status}
       >
-        {/* outer halo — slow gentle pulse */}
-        <span className="absolute inset-0 rounded-full bg-orange-500/40 animate-[sp-pulse_1.6s_ease-in-out_infinite]" />
-        {/* inner dot — solid */}
-        <span className="relative h-1.5 w-1.5 rounded-full bg-orange-500" />
+        {/* outer halo — slow gentle pulse, monochrome */}
+        <span className="absolute inset-0 rounded-full bg-foreground/30 animate-[sp-pulse_1.6s_ease-in-out_infinite]" />
+        {/* inner dot — solid foreground */}
+        <span className="relative h-1.5 w-1.5 rounded-full bg-foreground" />
       </span>
     );
   }

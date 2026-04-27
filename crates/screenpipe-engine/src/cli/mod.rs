@@ -6,6 +6,8 @@ pub mod audio;
 pub mod auth;
 pub mod backup;
 pub mod connection;
+pub mod db;
+pub mod install;
 pub mod login;
 pub mod mcp;
 pub mod pipe;
@@ -218,6 +220,16 @@ pub enum Command {
         subcommand: VaultCommand,
     },
 
+    /// Install a bundle of pipes from a manifest URL
+    Install {
+        /// Manifest URL (HTTPS, JSON). Defaults to the screenpipe starter bundle.
+        #[arg(default_value = "https://screenpi.pe/start.json")]
+        url: String,
+        /// Allow manifests hosted outside the trusted host list
+        #[arg(long, default_value_t = false)]
+        allow_untrusted: bool,
+    },
+
     /// Authenticate with screenpipe cloud
     Login,
 
@@ -234,6 +246,12 @@ pub enum Command {
     Auth {
         #[command(subcommand)]
         subcommand: AuthCommand,
+    },
+
+    /// Database recovery + storage cleanup (corruption repair, free disk)
+    Db {
+        #[command(subcommand)]
+        subcommand: DbCommand,
     },
 
     /// Database backup & maintenance (checkpoint WAL, export snapshot)
@@ -718,6 +736,42 @@ pub enum VaultCommand {
 // =============================================================================
 // Backup subcommands
 // =============================================================================
+
+#[derive(Subcommand)]
+pub enum DbCommand {
+    /// Run PRAGMA quick_check on the live db.sqlite
+    Check,
+    /// Recover a corrupt db.sqlite via SQLite's `.recover` page-level scan.
+    /// Snapshots the corrupt file aside, repairs into a sidecar, integrity-checks,
+    /// and atomically swaps in the recovered db. Refuses to run while screenpipe
+    /// is open (the desktop app would race the swap).
+    Recover {
+        /// Run even if the screenpipe HTTP server is reachable. Dangerous —
+        /// quitting the app cleanly is preferred.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List stale recovery/backup artifacts (db.sqlite.corrupt-*, db_corrupted.sqlite,
+    /// db.sqlite.backup, db-recovery-* dirs, db-hotfix-* dirs, db.sqlite.pre-recover-*).
+    /// Defaults to dry-run; pass `--apply` to actually delete. Never touches live
+    /// db.sqlite, recordings under data/, pipes/, or settings.
+    Cleanup {
+        /// Actually delete (default is dry-run for safety).
+        #[arg(long)]
+        apply: bool,
+        /// Run even if the screenpipe HTTP server is reachable.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Force-clear the .db_recovery.lock file (escape hatch if a previous
+    /// `screenpipe db ...` run was killed without releasing the lock).
+    Unlock {
+        /// Remove the lock even if it appears alive — only do this if you're
+        /// certain no real op is in progress.
+        #[arg(long)]
+        force: bool,
+    },
+}
 
 #[derive(Subcommand)]
 pub enum BackupCommand {

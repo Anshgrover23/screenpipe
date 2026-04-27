@@ -39,7 +39,7 @@ async fn open_secret_store() -> Option<screenpipe_secrets::SecretStore> {
     let db_path = data_dir.join("db.sqlite");
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
     let pool = sqlx::SqlitePool::connect(&db_url).await.ok()?;
-    let secret_key = match crate::secrets::get_key() {
+    let secret_key = match crate::secrets::get_key_if_encryption_enabled() {
         crate::secrets::KeyResult::Found(k) => Some(k),
         _ => None,
     };
@@ -424,9 +424,22 @@ pub async fn oauth_disconnect(
     instance: Option<String>,
 ) -> Result<bool, String> {
     let store = open_secret_store().await;
-    oauth::delete_oauth_token_instance(store.as_ref(), &integration_id, instance.as_deref())
-        .await
-        .map_err(|e| format!("failed to remove token: {}", e))?;
+    if instance.is_none() {
+        // load_oauth_json falls back to named instances (e.g. the user's email) when
+        // the None-key is empty, so deleting only the None-key leaves the token alive
+        // under its named instance and oauth_status incorrectly reports connected=true.
+        // Sweep all instances so the fallback path finds nothing.
+        let instances = oauth::list_oauth_instances(store.as_ref(), &integration_id).await;
+        for inst in instances {
+            let _ = oauth::delete_oauth_token_instance(store.as_ref(), &integration_id, inst.as_deref()).await;
+        }
+        // Also delete the None-key in case it exists alongside named ones.
+        let _ = oauth::delete_oauth_token_instance(store.as_ref(), &integration_id, None).await;
+    } else {
+        oauth::delete_oauth_token_instance(store.as_ref(), &integration_id, instance.as_deref())
+            .await
+            .map_err(|e| format!("failed to remove token: {}", e))?;
+    }
     info!(
         "OAuth disconnected: {} (instance={:?})",
         integration_id, instance

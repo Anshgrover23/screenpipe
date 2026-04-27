@@ -1122,9 +1122,15 @@ pub async fn pi_start_inner(
             if let Some(mut m) = pool.sessions.remove(&key) {
                 m.stop();
             }
+            // Stage 5: legacy `pi_session_evicted` topic dropped.
+            // Consumers read from `agent_session_evicted` via the bus.
             let _ = app.emit(
-                "pi_session_evicted",
-                serde_json::json!({ "session": key, "reason": "pool_full" }),
+                "agent_session_evicted",
+                serde_json::json!({
+                    "sessionId": key,
+                    "source": "pi",
+                    "reason": "pool_full",
+                }),
             );
         } else {
             // Every session in the pool is busy. Refuse rather than kill a
@@ -1534,10 +1540,17 @@ pub async fn pi_start_inner(
                             }
                         }
                     }
-                    // Always emit as Tauri event too (frontend may need response events)
-                    let tagged = json!({ "sessionId": sid_clone, "event": event });
-                    if let Err(e) = app_handle.emit("pi_event", &tagged) {
-                        error!("Failed to emit pi_event: {}", e);
+                    // Frontend subscribes via the agent-event bus
+                    // (`apps/screenpipe-app-tauri/lib/events/bus.ts`).
+                    // Stage 5 cleanup: legacy `pi_event` topic removed
+                    // — every consumer now reads from `agent_event`.
+                    let unified = json!({
+                        "source": "pi",
+                        "sessionId": sid_clone,
+                        "event": event,
+                    });
+                    if let Err(e) = app_handle.emit("agent_event", &unified) {
+                        error!("Failed to emit agent_event: {}", e);
                     }
                 }
                 None => {
@@ -1563,9 +1576,15 @@ pub async fn pi_start_inner(
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
+            // Stage 5 cleanup: legacy `pi_terminated` topic removed.
+            // Consumers read from `agent_terminated` via the bus.
             let _ = app_handle.emit(
-                "pi_terminated",
-                json!({ "sessionId": sid_clone, "pid": pid }),
+                "agent_terminated",
+                json!({
+                    "sessionId": sid_clone,
+                    "source": "pi",
+                    "pid": pid,
+                }),
             );
         } else {
             debug!("Pi stdout reader: pi_terminated already emitted for this session, skipping");
@@ -1588,9 +1607,15 @@ pub async fn pi_start_inner(
                         "Pi stderr JSON (session {}): type={}",
                         sid_stderr, event_type
                     );
-                    let tagged = json!({ "sessionId": sid_stderr, "event": event });
-                    if let Err(e) = app_handle.emit("pi_event", &tagged) {
-                        error!("Failed to emit pi_event from stderr: {}", e);
+                    // Stage 5: stderr JSON forwarded on the unified bus
+                    // (legacy `pi_event` topic dropped).
+                    let unified = json!({
+                        "source": "pi",
+                        "sessionId": sid_stderr,
+                        "event": event,
+                    });
+                    if let Err(e) = app_handle.emit("agent_event", &unified) {
+                        error!("Failed to emit agent_event from stderr: {}", e);
                     }
                     if let Err(e) = app_handle.emit("pi_output", &line) {
                         error!("Failed to emit pi_output from stderr: {}", e);
