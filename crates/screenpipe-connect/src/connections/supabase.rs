@@ -11,10 +11,10 @@ use serde_json::{Map, Value};
 
 // OAuth App registered at https://supabase.com/dashboard/account/integrations
 // Redirect URI: http://localhost:3030/connections/oauth/callback
-// TODO: replace with the real client_id after registering the OAuth app
+// Client secret lives in the website backend (OAUTH_SUPABASE_CLIENT_SECRET).
 static OAUTH: OAuthConfig = OAuthConfig {
     auth_url: "https://api.supabase.com/v1/oauth/authorize",
-    client_id: "SUPABASE_OAUTH_CLIENT_ID",
+    client_id: "9ca2e439-fb3a-4311-848c-8bb75e448a3f",
     extra_auth_params: &[],
     redirect_uri_override: None,
 };
