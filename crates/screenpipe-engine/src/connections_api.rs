@@ -1473,7 +1473,7 @@ mod tests {
         };
         let mut creds = Map::new();
         creds.insert("api_key".into(), json!("sk-test-123"));
-        match resolve_auth(&auth_cfg, Some(&creds), None) {
+        match resolve_auth(&auth_cfg, Some(&creds), None, None) {
             ResolvedAuth::Header(name, value) => {
                 assert_eq!(name, "Authorization");
                 assert_eq!(value, "Bearer sk-test-123");
@@ -1489,7 +1489,7 @@ mod tests {
         };
         let mut creds = Map::new();
         creds.insert("api_key".into(), json!("should-not-use-this"));
-        match resolve_auth(&auth_cfg, Some(&creds), Some("oauth-token-xyz")) {
+        match resolve_auth(&auth_cfg, Some(&creds), Some("oauth-token-xyz"), None) {
             ResolvedAuth::Header(name, value) => {
                 assert_eq!(name, "Authorization");
                 assert_eq!(value, "Bearer oauth-token-xyz");
@@ -1504,7 +1504,7 @@ mod tests {
             credential_key: "api_key",
         };
         assert!(matches!(
-            resolve_auth(&auth_cfg, None, None),
+            resolve_auth(&auth_cfg, None, None, None),
             ResolvedAuth::None
         ));
     }
@@ -1517,7 +1517,7 @@ mod tests {
         };
         let mut creds = Map::new();
         creds.insert("api_key".into(), json!("my-key"));
-        match resolve_auth(&auth_cfg, Some(&creds), None) {
+        match resolve_auth(&auth_cfg, Some(&creds), None, None) {
             ResolvedAuth::Header(name, value) => {
                 assert_eq!(name, "X-API-Key");
                 assert_eq!(value, "my-key");
@@ -1535,7 +1535,7 @@ mod tests {
         let mut creds = Map::new();
         creds.insert("email".into(), json!("user@example.com"));
         creds.insert("api_token".into(), json!("secret123"));
-        match resolve_auth(&auth_cfg, Some(&creds), None) {
+        match resolve_auth(&auth_cfg, Some(&creds), None, None) {
             ResolvedAuth::Basic(user, pass) => {
                 assert_eq!(user, "user@example.com");
                 assert_eq!(pass, "secret123");
@@ -1552,7 +1552,7 @@ mod tests {
         };
         let creds = Map::new(); // no email or api_token
         assert!(matches!(
-            resolve_auth(&auth_cfg, Some(&creds), None),
+            resolve_auth(&auth_cfg, Some(&creds), None, None),
             ResolvedAuth::None
         ));
     }
@@ -1561,7 +1561,7 @@ mod tests {
     fn test_resolve_auth_none() {
         let auth_cfg = ProxyAuth::None;
         assert!(matches!(
-            resolve_auth(&auth_cfg, None, None),
+            resolve_auth(&auth_cfg, None, None, None),
             ResolvedAuth::None
         ));
     }
