@@ -38,6 +38,7 @@ import { ConnectionsSection } from "@/components/settings/connections-section";
 import { MeetingNotesSection } from "@/components/meeting-notes";
 import { StandaloneChat } from "@/components/standalone-chat";
 import { ChatSidebar } from "@/components/chat-sidebar";
+import { SearchChatsDialog } from "@/components/search-chats-dialog";
 import { mountPiEventRouter } from "@/lib/stores/pi-event-router";
 import { mountPipeRunRecorder } from "@/lib/events/pipe-run-recorder";
 import { mountPipeWatchWriter } from "@/lib/events/pipe-watch-writer";
@@ -99,6 +100,20 @@ function HomeContent() {
   const { isTranslucent } = useSidebarContext();
   const teamState = useTeam();
   const { isSectionHidden, isSettingLocked, needsLicenseKey, submitLicenseKey } = useEnterprisePolicy();
+
+  const [searchChatsOpen, setSearchChatsOpen] = useState(false);
+
+  // Ctrl+Shift+K (Win) / Cmd+Shift+K (Mac) opens the search chats dialog
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchChatsOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   // Redirect settings sections to the standalone settings page
   useEffect(() => {
@@ -483,6 +498,35 @@ function HomeContent() {
     window.addEventListener("open-settings", handler);
     return () => window.removeEventListener("open-settings", handler);
   }, [openSettings, setActiveSection]);
+
+  const handleSearchSelectChat = (id: string) => {
+    setActiveSection("home");
+    useChatStore.getState().actions.setCurrent(id);
+    void emit("chat-load-conversation", { conversationId: id });
+  };
+
+  const handleSearchNewChat = () => {
+    setActiveSection("home");
+    const id = crypto.randomUUID();
+    const store = useChatStore.getState();
+    Object.values(store.sessions).forEach((s) => {
+      if (s.draft) store.actions.drop(s.id);
+    });
+    store.actions.upsert({
+      id,
+      title: "new chat",
+      preview: "",
+      status: "idle",
+      messageCount: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      pinned: false,
+      unread: false,
+      draft: true,
+    });
+    store.actions.setCurrent(id);
+    void emit("chat-load-conversation", { conversationId: id });
+  };
 
   const renderMainSection = () => {
     if (isSectionHidden(activeSection) && activeSection !== "help") {
@@ -869,6 +913,30 @@ function HomeContent() {
                       </Tooltip>
                     );
                   }
+                  if (section.id === "home") {
+                    return (
+                      <React.Fragment key={section.id}>
+                        {btn}
+                        <button
+                          onClick={() => setSearchChatsOpen(true)}
+                          className={cn(
+                            "w-full flex items-center px-2.5 py-1.5 rounded-lg transition-all duration-150 text-left group space-x-2.5",
+                            isTranslucent
+                              ? "vibrant-nav-item vibrant-nav-hover"
+                              : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          <div className={cn(
+                            "transition-colors flex-shrink-0",
+                            isTranslucent ? "vibrant-sidebar-fg-muted" : "text-muted-foreground group-hover:text-foreground"
+                          )}>
+                            <Search className="h-3.5 w-3.5" />
+                          </div>
+                          <span className="text-xs truncate font-medium">search chats</span>
+                        </button>
+                      </React.Fragment>
+                    );
+                  }
                   return btn;
                 })}
               </div>
@@ -1075,6 +1143,13 @@ function HomeContent() {
 
           </div>
       </div>
+
+      <SearchChatsDialog
+        open={searchChatsOpen}
+        onOpenChange={setSearchChatsOpen}
+        onSelectChat={handleSearchSelectChat}
+        onNewChat={handleSearchNewChat}
+      />
     </div>
   );
 }
