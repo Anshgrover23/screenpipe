@@ -61,6 +61,11 @@ pub(crate) struct UiaContext {
     /// Uses Full mode so walked elements retain live COM references for navigation.
     walker_cache_request: IUIAutomationCacheRequest,
     tree_walker: IUIAutomationTreeWalker,
+    /// Minimal cache request used only to read the control type of the focused element
+    /// before committing to a full subtree walk. TreeScope_Element avoids enumerating
+    /// children, which can trigger side effects in some UIA providers (e.g. Outlook
+    /// autocomplete selection on first child enumeration).
+    focus_check_cache_request: IUIAutomationCacheRequest,
 }
 
 impl UiaContext {
@@ -121,11 +126,20 @@ impl UiaContext {
 
             let tree_walker = automation.ControlViewWalker()?;
 
+            // Minimal single-element cache request for pre-capture control type check.
+            // TreeScope_Element (not Subtree) means no children are enumerated, so
+            // providers with enumeration side effects (Outlook autocomplete) are safe.
+            let focus_check_cache_request = automation.CreateCacheRequest()?;
+            focus_check_cache_request.AddProperty(UIA_ControlTypePropertyId)?;
+            focus_check_cache_request.SetAutomationElementMode(AutomationElementMode_None)?;
+            focus_check_cache_request.SetTreeScope(TreeScope_Element)?;
+
             Ok(Self {
                 automation,
                 cache_request,
                 walker_cache_request,
                 tree_walker,
+                focus_check_cache_request,
             })
         }
     }
@@ -447,6 +461,21 @@ impl UiaContext {
         }
     }
 
+    /// Get the UIA control type ID of the currently focused element using only a
+    /// single-element cache (no subtree enumeration). Returns None if the call fails.
+    fn get_focused_control_type_id(&self) -> Option<i32> {
+        unsafe {
+            let element = self
+                .automation
+                .GetFocusedElementBuildCache(&self.focus_check_cache_request)
+                .ok()?;
+            element
+                .GetCachedPropertyValue(UIA_ControlTypePropertyId)
+                .ok()
+                .and_then(|v| i32::try_from(&v).ok())
+        }
+    }
+
     /// Convert a UIA element to ElementContext
     fn element_to_context(&self, element: &IUIAutomationElement) -> ElementContext {
         let role = self.get_control_type_name(element);
@@ -494,9 +523,25 @@ struct FocusChangedHandler {
 impl IUIAutomationFocusChangedEventHandler_Impl for FocusChangedHandler_Impl {
     fn HandleFocusChangedEvent(
         &self,
-        _sender: Option<&IUIAutomationElement>,
+        sender: Option<&IUIAutomationElement>,
     ) -> windows::core::Result<()> {
-        // Record the time of focus change; the UIA thread will debounce and capture
+        // Skip tree capture when focus moves to a transient selection element (list
+        // item, menu item, etc.). Enumerating the accessibility subtree while such
+        // an element is focused can trigger unintended selection in some UIA providers
+        // — reproduced with Outlook's email autocomplete (first suggestion auto-commits).
+        // GetCurrentPropertyValue reads a single live property; it does NOT enumerate
+        // children and will not trigger the side effect.
+        if let Some(elem) = sender {
+            if let Ok(variant) = unsafe { elem.GetCurrentPropertyValue(UIA_ControlTypePropertyId) }
+            {
+                if let Ok(ct) = i32::try_from(&variant) {
+                    if is_dropdown_selection_type(ct) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         let hwnd = unsafe { GetForegroundWindow() };
         if !hwnd.is_invalid() {
             *self.pending.lock() = Some(PendingFocus {
@@ -757,6 +802,24 @@ fn compute_next_timeout(
     min_ms.max(1) // avoid 0 (which means infinite in Win32)
 }
 
+/// Returns true for UIA control types that represent transient selection items
+/// (dropdown list items, menu items, etc.).
+///
+/// Enumerating the accessibility subtree of a window while one of these elements
+/// is focused can trigger unintended selection events in some UIA providers (the
+/// Outlook autocomplete being the canonical example). When the focused element is
+/// one of these types we skip the full tree walk entirely.
+fn is_dropdown_selection_type(control_type_id: i32) -> bool {
+    matches!(
+        control_type_id,
+        50007 | // ListItem
+        50009 | // Menu
+        50011 | // MenuItem
+        50024 | // TreeItem
+        50029   // DataItem
+    )
+}
+
 /// Capture a window tree and send it through the channel if it changed.
 fn capture_and_send(
     uia: &UiaContext,
@@ -779,6 +842,21 @@ fn capture_and_send(
     }
     if let Some(ref title) = window_title {
         if !config.should_capture_window(title) {
+            return;
+        }
+    }
+
+    // Skip the full subtree walk if a transient selection element (list item, menu
+    // item, etc.) currently has focus. The subtree enumeration can trigger selection
+    // side effects in providers like Outlook's autocomplete. This check uses a
+    // single-element cache request (no children enumerated) so it is safe.
+    if let Some(ct_id) = uia.get_focused_control_type_id() {
+        if is_dropdown_selection_type(ct_id) {
+            trace!(
+                "Skipping tree capture for '{}': focused element is a transient selection control (type {})",
+                app_name, ct_id
+            );
+            *last_capture_time = Instant::now();
             return;
         }
     }
