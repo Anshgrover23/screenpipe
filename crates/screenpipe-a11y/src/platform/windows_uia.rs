@@ -66,6 +66,10 @@ pub(crate) struct UiaContext {
     /// children, which can trigger side effects in some UIA providers (e.g. Outlook
     /// autocomplete selection on first child enumeration).
     focus_check_cache_request: IUIAutomationCacheRequest,
+    /// Full-property cache request for the focused element only (TreeScope_Element).
+    /// Used to emit a partial snapshot when the focused element is a transient
+    /// selection control, capturing its properties without enumerating siblings.
+    focused_element_full_cache_request: IUIAutomationCacheRequest,
 }
 
 impl UiaContext {
@@ -134,12 +138,36 @@ impl UiaContext {
             focus_check_cache_request.SetAutomationElementMode(AutomationElementMode_None)?;
             focus_check_cache_request.SetTreeScope(TreeScope_Element)?;
 
+            // Full-property single-element cache for partial snapshots when the focused
+            // element is a dropdown/menu item. Same properties as cache_request but
+            // TreeScope_Element so we read the item's properties without enumerating
+            // children (which would trigger the provider side effect).
+            let focused_element_full_cache_request = automation.CreateCacheRequest()?;
+            focused_element_full_cache_request.AddProperty(UIA_NamePropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_ControlTypePropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_AutomationIdPropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_ClassNamePropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_BoundingRectanglePropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_IsEnabledPropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_ValueValuePropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_HasKeyboardFocusPropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_IsKeyboardFocusablePropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_HelpTextPropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_IsPasswordPropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_AcceleratorKeyPropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_AccessKeyPropertyId)?;
+            focused_element_full_cache_request.AddProperty(UIA_LocalizedControlTypePropertyId)?;
+            focused_element_full_cache_request
+                .SetAutomationElementMode(AutomationElementMode_None)?;
+            focused_element_full_cache_request.SetTreeScope(TreeScope_Element)?;
+
             Ok(Self {
                 automation,
                 cache_request,
                 walker_cache_request,
                 tree_walker,
                 focus_check_cache_request,
+                focused_element_full_cache_request,
             })
         }
     }
@@ -476,6 +504,21 @@ impl UiaContext {
         }
     }
 
+    /// Capture just the focused element as a single AccessibilityNode (no children).
+    /// Uses focused_element_full_cache_request (TreeScope_Element) so no child
+    /// enumeration happens — safe even when Outlook autocomplete is open.
+    fn capture_focused_element_node(&self) -> Option<AccessibilityNode> {
+        unsafe {
+            let element = self
+                .automation
+                .GetFocusedElementBuildCache(&self.focused_element_full_cache_request)
+                .ok()?;
+            let mut count = 0;
+            // max_elements=1 prevents build_node from attempting GetCachedChildren
+            Some(self.build_node(&element, 1, &mut count))
+        }
+    }
+
     /// Convert a UIA element to ElementContext
     fn element_to_context(&self, element: &IUIAutomationElement) -> ElementContext {
         let role = self.get_control_type_name(element);
@@ -523,25 +566,11 @@ struct FocusChangedHandler {
 impl IUIAutomationFocusChangedEventHandler_Impl for FocusChangedHandler_Impl {
     fn HandleFocusChangedEvent(
         &self,
-        sender: Option<&IUIAutomationElement>,
+        _sender: Option<&IUIAutomationElement>,
     ) -> windows::core::Result<()> {
-        // Skip tree capture when focus moves to a transient selection element (list
-        // item, menu item, etc.). Enumerating the accessibility subtree while such
-        // an element is focused can trigger unintended selection in some UIA providers
-        // — reproduced with Outlook's email autocomplete (first suggestion auto-commits).
-        // GetCurrentPropertyValue reads a single live property; it does NOT enumerate
-        // children and will not trigger the side effect.
-        if let Some(elem) = sender {
-            if let Ok(variant) = unsafe { elem.GetCurrentPropertyValue(UIA_ControlTypePropertyId) }
-            {
-                if let Ok(ct) = i32::try_from(&variant) {
-                    if is_dropdown_selection_type(ct) {
-                        return Ok(());
-                    }
-                }
-            }
-        }
-
+        // Record the time of focus change; the UIA thread will debounce and capture.
+        // capture_and_send decides whether to do a full tree walk or a focused-element-
+        // only capture (e.g. when a dropdown/autocomplete item is focused).
         let hwnd = unsafe { GetForegroundWindow() };
         if !hwnd.is_invalid() {
             *self.pending.lock() = Some(PendingFocus {
@@ -846,16 +875,34 @@ fn capture_and_send(
         }
     }
 
-    // Skip the full subtree walk if a transient selection element (list item, menu
-    // item, etc.) currently has focus. The subtree enumeration can trigger selection
-    // side effects in providers like Outlook's autocomplete. This check uses a
-    // single-element cache request (no children enumerated) so it is safe.
+    // When a transient selection element (list item, menu item, etc.) is focused,
+    // skip the full window subtree walk — child enumeration can trigger unintended
+    // selection events in some UIA providers (Outlook autocomplete auto-commits the
+    // first suggestion). Instead, capture just the focused element and emit a partial
+    // snapshot so callers still see what item the user is on.
     if let Some(ct_id) = uia.get_focused_control_type_id() {
         if is_dropdown_selection_type(ct_id) {
-            trace!(
-                "Skipping tree capture for '{}': focused element is a transient selection control (type {})",
-                app_name, ct_id
-            );
+            if let Some(node) = uia.capture_focused_element_node() {
+                let tree_hash = compute_tree_hash(&node);
+                if tree_hash != *last_tree_hash {
+                    *last_tree_hash = tree_hash;
+                    let snapshot = WindowTreeSnapshot {
+                        timestamp: Utc::now(),
+                        app_name: app_name.clone(),
+                        window_title: window_title.clone(),
+                        pid,
+                        element_count: 1,
+                        root: node,
+                        tree_hash,
+                        is_partial: true,
+                    };
+                    let _ = tree_tx.try_send(snapshot);
+                    trace!(
+                        "Partial capture for '{}': focused element is a transient selection control (type {})",
+                        app_name, ct_id
+                    );
+                }
+            }
             *last_capture_time = Instant::now();
             return;
         }
@@ -899,6 +946,7 @@ fn capture_and_send(
         root,
         element_count,
         tree_hash,
+        is_partial: false,
     };
 
     let capture_ms = capture_start.elapsed().as_millis();

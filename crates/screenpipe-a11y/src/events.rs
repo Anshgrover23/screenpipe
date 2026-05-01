@@ -458,6 +458,12 @@ pub struct WindowTreeSnapshot {
 
     /// Hash of the tree for diffing (changes when tree content changes)
     pub tree_hash: u64,
+
+    /// True when only the focused element was captured (no full window subtree walk).
+    /// Set when a transient selection element (dropdown item, menu item) is focused to
+    /// avoid triggering provider side effects during child enumeration.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_partial: bool,
 }
 
 /// Modifier key flags
