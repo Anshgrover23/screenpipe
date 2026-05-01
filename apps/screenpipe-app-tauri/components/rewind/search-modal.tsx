@@ -448,6 +448,8 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
   const [chatResults, setChatResults] = useState<ConversationMeta[]>([]);
   const [isLoadingChats, setIsLoadingChats] = useState(false);
   const [selectedChatIndex, setSelectedChatIndex] = useState(0);
+  // Recent chats shown in the suggestions area (loaded on open, independent of chats tab)
+  const [recentChats, setRecentChats] = useState<ConversationMeta[]>([]);
 
   // App filter (for screen results and speaker drill-down)
   const [appFilter, setAppFilter] = useState<string | null>(null);
@@ -730,6 +732,14 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
   const { setHighlight, clear: clearHighlight } = useSearchHighlight();
 
   // Reset state when modal opens (focus is handled by useSearchFocus)
+  // Load a small set of recent chats on open so the suggestions area can show them
+  useEffect(() => {
+    if (!isOpen) return;
+    listConversations()
+      .then((all) => setRecentChats(all.filter((c) => !c.hidden && c.kind === "chat").slice(0, 5)))
+      .catch(() => {});
+  }, [isOpen]);
+
   useEffect(() => {
     if (isOpen) {
       setSelectedIndex(0);
@@ -1940,13 +1950,34 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
 
 
           {/* Suggestions when no query */}
-          {!debouncedQuery && !isSearching && (
-            <div className="py-8 px-2">
+          {!debouncedQuery && !isSearching && contentFilter !== "chats" && (
+            <div className="py-6 px-2 space-y-5">
+              {/* Recent chats strip */}
+              {recentChats.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-1.5 mb-2 justify-center">
+                    <MessageSquare className="w-3 h-3 text-muted-foreground/50" />
+                    <p className="text-xs text-muted-foreground/60">recent chats</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2 justify-center">
+                    {recentChats.map((chat) => (
+                      <button
+                        key={chat.id}
+                        onClick={() => { void emit("chat-load-conversation", { conversationId: chat.id }); onClose(); }}
+                        className="px-3 py-1.5 text-sm border border-border rounded-md
+                          hover:bg-muted hover:border-foreground/30 transition-colors
+                          text-foreground/70 hover:text-foreground cursor-pointer truncate max-w-[200px]"
+                      >
+                        {chat.title}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Memory suggestions */}
               {suggestions.length > 0 ? (
-                <>
-                  <p className="text-xs text-muted-foreground mb-3 text-center">
-                    from your recent activity
-                  </p>
+                <div>
+                  <p className="text-xs text-muted-foreground/60 mb-2 text-center">from your recent activity</p>
                   <div className="flex flex-wrap gap-2 justify-center">
                     {suggestions.map((suggestion) => (
                       <button
@@ -1960,15 +1991,17 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
                       </button>
                     ))}
                   </div>
-                </>
+                </div>
               ) : suggestionsLoading ? (
                 <div className="text-center text-sm text-muted-foreground">
                   loading suggestions...
                 </div>
               ) : (
-                <div className="text-center text-sm text-muted-foreground">
-                  type to search your screen history
-                </div>
+                !recentChats.length && (
+                  <div className="text-center text-sm text-muted-foreground">
+                    type to search your screen history
+                  </div>
+                )
               )}
             </div>
           )}
@@ -2006,7 +2039,7 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
                 setHasMoreTranscriptions(true);
               }
             }}
-            placeholder="search your memory... (# tags, @ people)"
+            placeholder="search memory & chats... (# tags, @ people)"
             className={cn(
               "flex-1 bg-transparent text-foreground placeholder:text-muted-foreground/60 outline-none",
               standalone ? "text-base" : "text-sm",
@@ -2119,7 +2152,7 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
                 setHasMoreTranscriptions(true);
               }
             }}
-            placeholder="Search your memory... (# tags, @ people)"
+            placeholder="Search memory & chats... (# tags, @ people)"
             className="flex-1 bg-transparent text-foreground placeholder:text-muted-foreground text-sm outline-none"
             autoComplete="off"
             autoCorrect="off"
