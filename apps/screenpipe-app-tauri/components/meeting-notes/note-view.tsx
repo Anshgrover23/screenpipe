@@ -16,6 +16,17 @@ import {
   Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/components/ui/use-toast";
 import { localFetch } from "@/lib/api";
 import { showChatWithPrefill } from "@/lib/chat-utils";
@@ -66,7 +77,6 @@ export function NoteView({
   const [attendees, setAttendees] = useState(meeting.attendees ?? "");
   const [note, setNote] = useState(meeting.note ?? "");
   const [saveState, setSaveState] = useState<SaveState>({ kind: "idle" });
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
   const [meetingCtx, setMeetingCtx] = useState<MeetingContext | null>(null);
 
@@ -82,7 +92,6 @@ export function NoteView({
     setAttendees(meeting.attendees ?? "");
     setNote(meeting.note ?? "");
     setSaveState({ kind: "idle" });
-    setConfirmDelete(false);
     setMeetingCtx(null);
     lastSavedRef.current = {
       title: meeting.title ?? "",
@@ -340,37 +349,37 @@ export function NoteView({
             <SaveIndicator state={saveState} />
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {!isLive &&
-              (confirmDelete ? (
-                <div className="flex items-center gap-1">
+            {!isLive && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={handleDelete}
-                    className="h-8 px-2 text-destructive hover:text-destructive normal-case tracking-normal"
+                    title="delete this meeting"
+                    className="h-8 w-8 p-0"
                   >
-                    delete?
+                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setConfirmDelete(false)}
-                    className="h-8 px-2 normal-case tracking-normal"
-                  >
-                    cancel
-                  </Button>
-                </div>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setConfirmDelete(true)}
-                  title="delete this meeting"
-                  className="h-8 w-8 p-0"
-                >
-                  <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-                </Button>
-              ))}
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>delete meeting</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      your notes and transcript will be permanently deleted.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      variant="destructive"
+                      onClick={() => void handleDelete()}
+                    >
+                      delete
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
 
             {isLive ? (
               <Button
