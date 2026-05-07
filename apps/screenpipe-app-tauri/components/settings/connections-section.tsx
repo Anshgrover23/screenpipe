@@ -1746,7 +1746,7 @@ export function ConnectionsSection() {
         { id: "browser-url", name: "Browser URL Capture", icon: "browser-url", connected: false },
         { id: "voice-memos", name: "Voice Memos", icon: "voice-memos", connected: false },
       ] : []),
-      { id: "apple-intelligence", name: "Apple Intelligence", icon: "apple-intelligence", connected: false },
+      ...(os === "macos" ? [{ id: "apple-intelligence", name: "Apple Intelligence", icon: "apple-intelligence", connected: false }] : []),
       { id: "apple-calendar", name: os === "windows" ? "Windows Calendar" : "Apple Calendar", icon: os === "windows" ? "windows-calendar" : "apple-calendar", connected: false },
       { id: "google-calendar", name: "Google Calendar", icon: "google-calendar", connected: false },
       { id: "google-docs", name: "Google Docs", icon: "google-docs", connected: false },

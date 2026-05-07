@@ -81,7 +81,7 @@ export function useHardcodedTiles(): HardcodedTile[] {
       { id: "browser-url", name: "Browser URL Capture", icon: "browser-url", connected: false },
       { id: "voice-memos", name: "Voice Memos", icon: "voice-memos", connected: false },
     ] as HardcodedTile[] : []),
-    { id: "apple-intelligence", name: "Apple Intelligence", icon: "apple-intelligence", connected: false },
+    ...(os === "macos" ? [{ id: "apple-intelligence", name: "Apple Intelligence", icon: "apple-intelligence", connected: false } as HardcodedTile] : []),
     {
       id: "apple-calendar",
       name: os === "windows" ? "Windows Calendar" : "Apple Calendar",
