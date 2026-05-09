@@ -470,7 +470,7 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
   const OCR_PAGE_SIZE = 24;
   const TRANSCRIPTION_PAGE_SIZE = 30;
 
-  const debouncedQuery = useDebounce(query, 400);
+  const debouncedQuery = useDebounce(query, 250);
   const { suggestions, isLoading: suggestionsLoading } = useSuggestions(isOpen);
 
   const {
@@ -687,15 +687,16 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
   const filteredSpeakerTranscriptionsRef = useRef(filteredSpeakerTranscriptions);
   filteredSpeakerTranscriptionsRef.current = filteredSpeakerTranscriptions;
 
-  // Load chats when switching to chats tab
+  // Load chats when switching to chats tab — skip if already loaded on open
   useEffect(() => {
-    if (contentFilter !== "chats") return;
+    if (contentFilter !== "chats" || chatResults.length > 0) return;
     setIsLoadingChats(true);
     setSelectedChatIndex(0);
     listConversations()
       .then((all) => setChatResults(all.filter((c) => !c.hidden && c.kind === "chat")))
       .catch(() => {})
       .finally(() => setIsLoadingChats(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contentFilter]);
 
   // Filtered chats by query
@@ -731,12 +732,16 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
 
   const { setHighlight, clear: clearHighlight } = useSearchHighlight();
 
-  // Reset state when modal opens (focus is handled by useSearchFocus)
-  // Load a small set of recent chats on open so the suggestions area can show them
+  // Load all chats on open — powers both the inline chat section in "All" view
+  // and the recent chats strip in the empty state
   useEffect(() => {
     if (!isOpen) return;
     listConversations()
-      .then((all) => setRecentChats(all.filter((c) => !c.hidden && c.kind === "chat").slice(0, 5)))
+      .then((all) => {
+        const chats = all.filter((c) => !c.hidden && c.kind === "chat");
+        setChatResults(chats);
+        setRecentChats(chats.slice(0, 5));
+      })
       .catch(() => {});
   }, [isOpen]);
 
@@ -1625,6 +1630,42 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
             ))}
           </div>
 
+          {/* Inline chat section in "All" view — appears instantly (in-memory filter) while screen results load */}
+          {contentFilter !== "chats" && debouncedQuery.trim().length >= 1 && filteredChats.length > 0 && !isTagSearch && !isPeopleSearch && (
+            <div className="mb-4">
+              <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1.5">
+                <MessageSquare className="w-3 h-3" />
+                chats
+              </p>
+              <div className="flex flex-col">
+                {filteredChats.slice(0, 5).map((chat) => {
+                  const ts = new Date(chat.lastUserMessageAt ?? chat.updatedAt).toISOString();
+                  return (
+                    <button
+                      key={chat.id}
+                      onClick={() => { void emit("chat-load-conversation", { conversationId: chat.id }); onClose(); }}
+                      className="w-full flex items-center gap-2.5 px-2 py-2 rounded text-left transition-colors hover:bg-muted/50"
+                    >
+                      <MessageSquare className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+                      <span className="text-sm truncate">{chat.title}</span>
+                      <span className="ml-auto text-[11px] text-muted-foreground font-mono shrink-0">
+                        {formatRelativeTime(ts)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {filteredChats.length > 5 && (
+                <button
+                  onClick={() => setContentFilter("chats")}
+                  className="mt-1 px-2 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                >
+                  see all {filteredChats.length} chats →
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Chat results */}
           {contentFilter === "chats" && (
             <>
@@ -1951,34 +1992,39 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
 
           {/* Suggestions when no query */}
           {!debouncedQuery && !isSearching && contentFilter !== "chats" && (
-            <div className="py-6 px-2 space-y-5">
-              {/* Recent chats strip */}
+            <div className="py-4 px-2 space-y-4">
+              {/* Recent chats — list with timestamps */}
               {recentChats.length > 0 && (
                 <div>
-                  <div className="flex items-center gap-1.5 mb-2 justify-center">
-                    <MessageSquare className="w-3 h-3 text-muted-foreground/50" />
-                    <p className="text-xs text-muted-foreground/60">recent chats</p>
-                  </div>
-                  <div className="flex flex-wrap gap-2 justify-center">
-                    {recentChats.map((chat) => (
-                      <button
-                        key={chat.id}
-                        onClick={() => { void emit("chat-load-conversation", { conversationId: chat.id }); onClose(); }}
-                        className="px-3 py-1.5 text-sm border border-border rounded-md
-                          hover:bg-muted hover:border-foreground/30 transition-colors
-                          text-foreground/70 hover:text-foreground cursor-pointer truncate max-w-[200px]"
-                      >
-                        {chat.title}
-                      </button>
-                    ))}
+                  <p className="text-xs text-muted-foreground/60 mb-1 flex items-center gap-1.5">
+                    <MessageSquare className="w-3 h-3" />
+                    recent chats
+                  </p>
+                  <div className="flex flex-col">
+                    {recentChats.map((chat) => {
+                      const ts = new Date(chat.lastUserMessageAt ?? chat.updatedAt).toISOString();
+                      return (
+                        <button
+                          key={chat.id}
+                          onClick={() => { void emit("chat-load-conversation", { conversationId: chat.id }); onClose(); }}
+                          className="w-full flex items-center gap-2.5 px-2 py-2 rounded text-left transition-colors hover:bg-muted/50"
+                        >
+                          <MessageSquare className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+                          <span className="text-sm text-foreground/80 truncate">{chat.title}</span>
+                          <span className="ml-auto text-[11px] text-muted-foreground font-mono shrink-0">
+                            {formatRelativeTime(ts)}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
-              {/* Memory suggestions */}
-              {suggestions.length > 0 ? (
+              {/* Suggestion chips from recent screen activity */}
+              {suggestions.length > 0 && (
                 <div>
-                  <p className="text-xs text-muted-foreground/60 mb-2 text-center">from your recent activity</p>
-                  <div className="flex flex-wrap gap-2 justify-center">
+                  <p className="text-xs text-muted-foreground/60 mb-2">from your recent activity</p>
+                  <div className="flex flex-wrap gap-2">
                     {suggestions.map((suggestion) => (
                       <button
                         key={suggestion}
@@ -1992,16 +2038,11 @@ export function SearchModal({ isOpen, onClose, onNavigateToTimestamp, embedded =
                     ))}
                   </div>
                 </div>
-              ) : suggestionsLoading ? (
-                <div className="text-center text-sm text-muted-foreground">
-                  loading suggestions...
+              )}
+              {!recentChats.length && !suggestionsLoading && (
+                <div className="text-center text-sm text-muted-foreground py-4">
+                  type to search your screen history
                 </div>
-              ) : (
-                !recentChats.length && (
-                  <div className="text-center text-sm text-muted-foreground">
-                    type to search your screen history
-                  </div>
-                )
               )}
             </div>
           )}
