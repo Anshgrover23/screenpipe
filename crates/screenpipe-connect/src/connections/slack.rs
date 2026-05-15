@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 static OAUTH: OAuthConfig = OAuthConfig {
     auth_url: "https://slack.com/oauth/v2/authorize",
-    client_id: "SLACK_CLIENT_ID_PLACEHOLDER",
+    client_id: "11089811693862.11135517223459",
     extra_auth_params: &[("scope", "incoming-webhook")],
     redirect_uri_override: Some("https://screenpi.pe/api/oauth/callback"),
 };
