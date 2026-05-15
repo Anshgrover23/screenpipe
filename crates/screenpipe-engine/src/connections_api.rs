@@ -1354,6 +1354,14 @@ fn resolve_auth(
                 ResolvedAuth::None
             }
         }
+        ProxyAuth::Token { credential_key } => {
+            let from_creds = creds.and_then(|c| c.get(*credential_key).and_then(|v| v.as_str()));
+            let from_oauth = oauth_extras.and_then(|v| v[*credential_key].as_str());
+            from_creds
+                .or(from_oauth)
+                .map(|k| ResolvedAuth::Header("Authorization".into(), format!("Token {}", k)))
+                .unwrap_or(ResolvedAuth::None)
+        }
         ProxyAuth::Header {
             name,
             credential_key,
@@ -2472,6 +2480,21 @@ mod tests {
             resolve_auth(&auth_cfg, None, None, None),
             ResolvedAuth::None
         ));
+    }
+
+    #[test]
+    fn test_resolve_auth_token_from_creds() {
+        let auth_cfg = ProxyAuth::Token {
+            credential_key: "access_token",
+        };
+        let creds = map(&[("access_token", "rw-token")]);
+        match resolve_auth(&auth_cfg, Some(&creds), None, None) {
+            ResolvedAuth::Header(name, value) => {
+                assert_eq!(name, "Authorization");
+                assert_eq!(value, "Token rw-token");
+            }
+            _ => panic!("expected header auth"),
+        }
     }
 
     #[test]
