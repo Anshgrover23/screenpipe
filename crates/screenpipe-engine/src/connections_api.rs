@@ -2487,7 +2487,8 @@ mod tests {
         let auth_cfg = ProxyAuth::Token {
             credential_key: "access_token",
         };
-        let creds = map(&[("access_token", "rw-token")]);
+        let mut creds = Map::new();
+        creds.insert("access_token".into(), json!("rw-token"));
         match resolve_auth(&auth_cfg, Some(&creds), None, None) {
             ResolvedAuth::Header(name, value) => {
                 assert_eq!(name, "Authorization");
