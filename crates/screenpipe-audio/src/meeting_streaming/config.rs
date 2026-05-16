@@ -53,6 +53,7 @@ impl MeetingStreamingProvider {
 pub struct MeetingStreamingConfig {
     pub enabled: bool,
     pub provider: MeetingStreamingProvider,
+    pub selected_engine_id: Option<String>,
     pub auth_token: Option<String>,
     pub api_key: Option<String>,
     pub endpoint: String,
@@ -69,7 +70,7 @@ impl Default for MeetingStreamingConfig {
             .ok()
             .as_deref()
             .and_then(|value| MeetingStreamingProvider::from_str(value).ok())
-            .unwrap_or(MeetingStreamingProvider::SelectedEngine);
+            .unwrap_or(MeetingStreamingProvider::ScreenpipeCloud);
         let api_key = provider_api_key(&provider);
         let endpoint = match provider {
             MeetingStreamingProvider::OpenAiRealtime => endpoint_from_env(
@@ -99,6 +100,7 @@ impl Default for MeetingStreamingConfig {
         Self {
             enabled: true,
             provider,
+            selected_engine_id: None,
             auth_token: env::var("SCREENPIPE_MEETING_CLOUD_TOKEN")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
@@ -149,6 +151,7 @@ impl FromStr for MeetingStreamingProvider {
 
 impl MeetingStreamingConfig {
     pub fn with_provider(mut self, provider: MeetingStreamingProvider) -> Self {
+        let existing_api_key = self.api_key.clone();
         self.provider = provider;
         match self.provider {
             MeetingStreamingProvider::SelectedEngine => {
@@ -169,7 +172,7 @@ impl MeetingStreamingConfig {
                 );
             }
             MeetingStreamingProvider::DeepgramLive => {
-                self.api_key = provider_api_key(&self.provider);
+                self.api_key = existing_api_key.or_else(|| provider_api_key(&self.provider));
                 self.endpoint = endpoint_from_env(
                     &["SCREENPIPE_MEETING_DEEPGRAM_LIVE_URL"],
                     DEEPGRAM_LIVE_URL,
@@ -200,6 +203,7 @@ impl MeetingStreamingConfig {
     pub fn from_settings(
         enabled: bool,
         provider: &str,
+        selected_engine_id: Option<String>,
         cloud_token: Option<String>,
         provider_api_key_override: Option<String>,
         language: Option<String>,
@@ -212,6 +216,9 @@ impl MeetingStreamingConfig {
         let mut config = Self {
             enabled,
             provider,
+            selected_engine_id: selected_engine_id
+                .and_then(|value| non_empty_trimmed(&value))
+                .map(|value| value.to_ascii_lowercase()),
             auth_token: cloud_token.filter(|s| !s.trim().is_empty()),
             language: language.filter(|s| !s.trim().is_empty()),
             local_speaker_name: local_speaker_name.and_then(|name| non_empty_trimmed(&name)),
@@ -219,7 +226,11 @@ impl MeetingStreamingConfig {
         };
 
         if config.provider == MeetingStreamingProvider::SelectedEngine {
-            config.api_key = None;
+            config.api_key = if config.selected_engine_id.as_deref() == Some("deepgram") {
+                provider_api_key_override
+            } else {
+                None
+            };
             config.endpoint = String::new();
             config.model = Some("selected transcription engine".to_string());
         } else if config.provider == MeetingStreamingProvider::OpenAiRealtime {
@@ -354,6 +365,7 @@ mod tests {
         let config = MeetingStreamingConfig::from_settings(
             true,
             "screenpipe-cloud",
+            Some("screenpipe-cloud".to_string()),
             Some("cloud-token".to_string()),
             None,
             None,
@@ -367,8 +379,15 @@ mod tests {
 
     #[test]
     fn screenpipe_cloud_is_not_ready_without_cloud_login() {
-        let config =
-            MeetingStreamingConfig::from_settings(true, "screenpipe-cloud", None, None, None, None);
+        let config = MeetingStreamingConfig::from_settings(
+            true,
+            "screenpipe-cloud",
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
 
         assert_eq!(config.provider, MeetingStreamingProvider::ScreenpipeCloud);
         assert!(!config.live_transcription_ready());
@@ -376,7 +395,7 @@ mod tests {
 
     #[test]
     fn selected_engine_is_the_non_cloud_default_provider() {
-        let config = MeetingStreamingConfig::from_settings(true, "", None, None, None, None);
+        let config = MeetingStreamingConfig::from_settings(true, "", None, None, None, None, None);
 
         assert_eq!(config.provider, MeetingStreamingProvider::SelectedEngine);
         assert!(config.live_transcription_ready());
@@ -407,6 +426,7 @@ mod tests {
         let config = MeetingStreamingConfig::from_settings(
             true,
             "deepgram-live",
+            Some("deepgram".to_string()),
             None,
             Some("settings-deepgram-key".to_string()),
             None,

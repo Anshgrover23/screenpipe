@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use tokio::{
     sync::{mpsc, RwLock},
     task::JoinHandle,
-    time::{interval, Duration},
+    time::{interval, Duration, Instant},
 };
 use tracing::{debug, info, warn};
 
@@ -77,6 +77,10 @@ async fn run_stream(
     let mut flush_tick = interval(FLUSH_TICK);
     let mut sequence: u64 = 0;
 
+    let mut last_transcript_at = Instant::now();
+    let mut frames_since_last_transcript: u64 = 0;
+    let mut stall_check_tick = interval(Duration::from_secs(10)); // Check every 10 seconds
+
     loop {
         tokio::select! {
             maybe_frame = rx.recv() => {
@@ -90,14 +94,39 @@ async fn run_stream(
                 if samples.is_empty() {
                     continue;
                 }
+
+                frames_since_last_transcript += 1;
                 buffer.push(samples, frame.captured_at_unix_ms);
                 if buffer.duration() >= LIVE_CHUNK_TARGET {
                     flush_buffer(&mut buffer, &mut session, &config, meeting_id, &device_name, &device_type, model.clone(), &mut sequence).await?;
+                    last_transcript_at = Instant::now();
+                    frames_since_last_transcript = 0;
                 }
             }
             _ = flush_tick.tick() => {
                 if buffer.duration() >= LIVE_CHUNK_MIN {
                     flush_buffer(&mut buffer, &mut session, &config, meeting_id, &device_name, &device_type, model.clone(), &mut sequence).await?;
+                    last_transcript_at = Instant::now();
+                    frames_since_last_transcript = 0;
+                }
+            }
+            _ = stall_check_tick.tick() => {
+                // Detect stall: audio arriving but no transcript for 60+ seconds
+                if frames_since_last_transcript > 0 && last_transcript_at.elapsed().as_secs() >= 60 {
+                    let msg = format!(
+                        "selected-engine transcription stalled: received {} frames but no transcript in 60s",
+                        frames_since_last_transcript
+                    );
+                    warn!("meeting streaming: {}", msg);
+                    emit_error(
+                        meeting_id,
+                        &config,
+                        Some(device_name.clone()),
+                        msg,
+                    );
+                    // Reset stall detection for next window
+                    frames_since_last_transcript = 0;
+                    last_transcript_at = Instant::now();
                 }
             }
         }

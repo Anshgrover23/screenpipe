@@ -4,7 +4,7 @@
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, OnceLock, RwLock,
 };
 
 use chrono::{DateTime, Utc};
@@ -23,16 +23,11 @@ use crate::core::device::{AudioDevice, DeviceType};
 pub struct MeetingAudioTap {
     tx: broadcast::Sender<MeetingAudioFrame>,
     active: Arc<AtomicBool>,
-    suppress_background: Arc<AtomicBool>,
 }
 
 impl MeetingAudioTap {
     pub fn new(tx: broadcast::Sender<MeetingAudioFrame>, active: Arc<AtomicBool>) -> Self {
-        Self {
-            tx,
-            active,
-            suppress_background: Arc::new(AtomicBool::new(false)),
-        }
+        Self { tx, active }
     }
 
     pub fn set_active(&self, active: bool) {
@@ -41,15 +36,6 @@ impl MeetingAudioTap {
 
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::Relaxed)
-    }
-
-    pub fn set_background_suppressed(&self, suppressed: bool) {
-        self.suppress_background
-            .store(suppressed, Ordering::Relaxed);
-    }
-
-    pub fn background_suppressed(&self) -> bool {
-        self.suppress_background.load(Ordering::Relaxed)
     }
 
     pub fn send(&self, frame: MeetingAudioFrame) {
@@ -192,4 +178,101 @@ pub struct MeetingStreamingStatusChanged {
     pub provider: String,
     pub live_transcription_enabled: bool,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct MeetingLiveTranscriptionHealth {
+    pub active: bool,
+    pub meeting_id: Option<i64>,
+    pub provider: Option<String>,
+    pub live_transcription_enabled: bool,
+    pub error: Option<String>,
+    pub error_since: Option<DateTime<Utc>>,
+    pub last_transcript_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub audio_frames_seen: u64,
+    pub audio_samples_seen: u64,
+}
+
+static LIVE_TRANSCRIPTION_HEALTH: OnceLock<RwLock<MeetingLiveTranscriptionHealth>> =
+    OnceLock::new();
+
+fn live_transcription_health() -> &'static RwLock<MeetingLiveTranscriptionHealth> {
+    LIVE_TRANSCRIPTION_HEALTH.get_or_init(|| RwLock::new(MeetingLiveTranscriptionHealth::default()))
+}
+
+pub fn live_transcription_health_snapshot() -> MeetingLiveTranscriptionHealth {
+    live_transcription_health()
+        .read()
+        .map(|health| health.clone())
+        .unwrap_or_default()
+}
+
+pub fn record_live_transcription_status(
+    active: bool,
+    meeting_id: Option<i64>,
+    provider: &str,
+    live_transcription_enabled: bool,
+    error: Option<&str>,
+) {
+    let now = Utc::now();
+    let Ok(mut health) = live_transcription_health().write() else {
+        return;
+    };
+
+    let previous_error = health.error.clone();
+    let previous_meeting_id = health.meeting_id;
+    let previous_provider = health.provider.clone();
+    health.active = active;
+    health.meeting_id = meeting_id;
+    health.provider = if provider.trim().is_empty() {
+        None
+    } else {
+        Some(provider.to_string())
+    };
+    health.live_transcription_enabled = live_transcription_enabled;
+    health.updated_at = Some(now);
+    if !active || previous_meeting_id != meeting_id || previous_provider != health.provider {
+        health.audio_frames_seen = 0;
+        health.audio_samples_seen = 0;
+    }
+
+    if active && live_transcription_enabled {
+        health.error = error.map(str::to_string);
+        health.error_since = match (previous_error.as_deref(), error) {
+            (_, None) => None,
+            (Some(prev), Some(next)) if prev == next => health.error_since.or(Some(now)),
+            (_, Some(_)) => Some(now),
+        };
+    } else {
+        health.error = error.map(str::to_string);
+        health.error_since = error.map(|_| now);
+    }
+}
+
+pub fn record_live_transcription_audio(meeting_id: i64, frames_seen: u64, samples_seen: u64) {
+    let now = Utc::now();
+    let Ok(mut health) = live_transcription_health().write() else {
+        return;
+    };
+
+    if health.meeting_id == Some(meeting_id) {
+        health.audio_frames_seen = frames_seen;
+        health.audio_samples_seen = samples_seen;
+        health.updated_at = Some(now);
+    }
+}
+
+pub fn record_live_transcription_transcript(meeting_id: i64) {
+    let now = Utc::now();
+    let Ok(mut health) = live_transcription_health().write() else {
+        return;
+    };
+
+    if health.meeting_id == Some(meeting_id) {
+        health.error = None;
+        health.error_since = None;
+        health.last_transcript_at = Some(now);
+        health.updated_at = Some(now);
+    }
 }

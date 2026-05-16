@@ -235,6 +235,8 @@ export function useTimelineKeyboard(opts: {
 	// Handle arrow key navigation via JS keydown (no global hotkey stealing)
 	useEffect(() => {
 		const handleArrowKeys = (e: KeyboardEvent) => {
+			if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+
 			// Skip when search modal is open (it has its own arrow handling)
 			if (showSearchModal) return;
 
@@ -263,79 +265,61 @@ export function useTimelineKeyboard(opts: {
 			if (hasSearchHighlight) dismissSearchHighlight();
 
 			const isAlt = e.altKey;
+			const direction = e.key === "ArrowLeft" ? 1 : -1;
 
 			// Signal arrow nav to skip debounce
 			setIsArrowNav(true);
 			if (arrowNavTimerRef.current) clearTimeout(arrowNavTimerRef.current);
 			arrowNavTimerRef.current = setTimeout(() => setIsArrowNav(false), 300);
 
-			if (e.key === "ArrowLeft") {
-				e.preventDefault();
-				if (!isPlaying) pausePlayback();
-				if (isAlt) {
-					// Alt+ArrowLeft = prev app boundary
-					setCurrentIndex((prev: number) => {
-						const currentApp = getFrameAppName(frames[prev]);
-						let i = prev + 1;
-						while (i < frames.length) {
-							if (getFrameAppName(frames[i]) !== currentApp) {
-								if (frames[i]) {
-									setCurrentFrame(frames[i]);
-									if (isPlaying) seekPlayback(new Date(frames[i].timestamp).getTime());
-								}
-								return i;
-							}
-							i++;
-						}
-						return prev;
-					});
-				} else {
-					// ArrowLeft = prev frame (older = higher index)
-					setCurrentIndex((prev: number) => {
-						const next = findNextDevice(prev, 1);
-						if (frames[next]) {
-							setCurrentFrame(frames[next]);
-							if (isPlaying) seekPlayback(new Date(frames[next].timestamp).getTime());
-						}
-						return next;
-					});
+			e.preventDefault();
+			if (isPlaying) pausePlayback();
+
+			let nextIndex = currentIndex;
+			if (isAlt) {
+				const currentApp = getFrameAppName(frames[currentIndex]);
+				let i = currentIndex + direction;
+				while (i >= 0 && i < frames.length) {
+					if (getFrameAppName(frames[i]) !== currentApp) {
+						nextIndex = i;
+						break;
+					}
+					i += direction;
 				}
-			} else if (e.key === "ArrowRight") {
-				e.preventDefault();
-				if (!isPlaying) pausePlayback();
-				if (isAlt) {
-					// Alt+ArrowRight = next app boundary
-					setCurrentIndex((prev: number) => {
-						const currentApp = getFrameAppName(frames[prev]);
-						let i = prev - 1;
-						while (i >= 0) {
-							if (getFrameAppName(frames[i]) !== currentApp) {
-								if (frames[i]) {
-									setCurrentFrame(frames[i]);
-									if (isPlaying) seekPlayback(new Date(frames[i].timestamp).getTime());
-								}
-								return i;
-							}
-							i--;
-						}
-						return prev;
-					});
-				} else {
-					// ArrowRight = next frame (newer = lower index)
-					setCurrentIndex((prev: number) => {
-						const next = findNextDevice(prev, -1);
-						if (frames[next]) {
-							setCurrentFrame(frames[next]);
-							if (isPlaying) seekPlayback(new Date(frames[next].timestamp).getTime());
-						}
-						return next;
-					});
+			} else {
+				nextIndex = findNextDevice(currentIndex, direction);
+			}
+
+			if (nextIndex !== currentIndex && frames[nextIndex]) {
+				const nextFrame = frames[nextIndex];
+				setCurrentIndex(nextIndex);
+				setCurrentFrame(nextFrame);
+				if (isPlaying) {
+					seekPlayback(new Date(nextFrame.timestamp).getTime());
 				}
 			}
 		};
 
 		window.addEventListener("keydown", handleArrowKeys);
 		return () => window.removeEventListener("keydown", handleArrowKeys);
-	}, [frames, setCurrentFrame, showSearchModal, isPlaying, seekPlayback, pausePlayback, inSearchReviewMode, searchResultIndex, searchResults, hasSearchHighlight, dismissSearchHighlight]);
+	}, [
+		frames,
+		currentIndex,
+		setCurrentIndex,
+		setCurrentFrame,
+		showSearchModal,
+		isPlaying,
+		seekPlayback,
+		pausePlayback,
+		inSearchReviewMode,
+		searchResultIndex,
+		searchResults,
+		hasSearchHighlight,
+		dismissSearchHighlight,
+		setIsArrowNav,
+		arrowNavTimerRef,
+		findNextDevice,
+		navigateToSearchResultRef,
+	]);
 
 }

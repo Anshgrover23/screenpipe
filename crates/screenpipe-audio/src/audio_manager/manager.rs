@@ -647,7 +647,6 @@ impl AudioManager {
         let whisper_receiver = self.recording_receiver.clone();
         let metrics = self.metrics.clone();
         let meeting_detector = self.meeting_detector.clone();
-        let meeting_audio_tap = self.meeting_audio_tap.clone();
         let db = self.db.clone();
         let shared_engine = self.engine.clone();
         let on_insert_session = self.on_transcription_insert.clone();
@@ -798,16 +797,7 @@ impl AudioManager {
                 // Meeting live transcription has its own provider/session path.
                 // While a live session is active, do not also run the same
                 // audio through the background STT path. The durable audio
-                // chunk was already written above; background transcription
-                // resumes when the live session ends.
-                if meeting_audio_tap.background_suppressed() {
-                    had_deferred_segments = true;
-                    metrics.record_segment_deferred();
-                    debug!(
-                        "meeting live transcription active; skipping background transcription for this chunk"
-                    );
-                    continue;
-                }
+                // chunk was already written above.
 
                 // Batch mode: defer transcription during audio sessions (meetings, YouTube, etc).
                 // Audio is already persisted to disk + DB above.
