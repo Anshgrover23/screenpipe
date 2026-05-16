@@ -31,6 +31,16 @@ interface AudioPipelineHealth {
   transcription_paused?: boolean;
   meeting_detected?: boolean;
   meeting_app?: string;
+  live_transcription_active?: boolean;
+  live_transcription_enabled?: boolean;
+  live_transcription_provider?: string | null;
+  live_transcription_error?: string | null;
+  live_transcription_error_since?: string | null;
+  live_transcription_error_age_secs?: number | null;
+  live_transcription_last_transcript_at?: string | null;
+  live_transcription_audio_frames_seen?: number | null;
+  live_transcription_audio_samples_seen?: number | null;
+  live_transcription_no_audio_secs?: number | null;
 }
 
 interface HealthCheckResponse {

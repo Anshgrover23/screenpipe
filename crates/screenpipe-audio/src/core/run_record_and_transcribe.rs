@@ -591,7 +591,6 @@ mod tests {
         let (meeting_tx, _) = broadcast::channel(512);
         let meeting_tap = MeetingAudioTap::new(meeting_tx, Arc::new(AtomicBool::new(false)));
         meeting_tap.set_active(true);
-        meeting_tap.set_background_suppressed(true);
         let mut live_rx = meeting_tap.subscribe();
 
         let (whisper_tx, whisper_rx) = crossbeam::channel::bounded::<AudioInput>(4);
@@ -642,7 +641,6 @@ mod tests {
         assert_eq!(live_frame.channels, 1);
         assert_eq!(live_frame.sample_rate, sample_rate);
         assert!(!live_frame.samples.is_empty());
-        assert!(meeting_tap.background_suppressed());
 
         let whisper_rx_for_assert = whisper_rx.clone();
         let audio_input = tokio::task::spawn_blocking(move || {

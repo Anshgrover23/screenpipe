@@ -32,7 +32,9 @@ static AUDIO_RECONCILIATION_BACKLOG_CACHE: std::sync::LazyLock<
 /// Minimum interval between full health recomputations (in seconds).
 const HEALTH_CACHE_TTL_SECS: u64 = 1;
 const AUDIO_RECONCILIATION_LOOKBACK_HOURS: i64 = 24 * 7;
-const AUDIO_RECONCILIATION_FRESHNESS_DELAY_SECS: i64 = 10 * 60;
+// Reduced from 10*60 (600s) to 30s for faster meeting transcription recovery.
+// Deduplication in the UI/database handles duplicate avoidance.
+const AUDIO_RECONCILIATION_FRESHNESS_DELAY_SECS: i64 = 30;
 const AUDIO_RECONCILIATION_BACKLOG_CACHE_TTL_SECS: i64 = 30;
 
 /// Describe the most likely cause of a DB-write stall from pool stats.
@@ -180,6 +182,26 @@ pub struct AudioPipelineHealthInfo {
     pub meeting_detected: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meeting_app: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_transcription_active: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_transcription_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_transcription_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_transcription_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_transcription_error_since: Option<chrono::DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_transcription_error_age_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_transcription_last_transcript_at: Option<chrono::DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_transcription_audio_frames_seen: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_transcription_audio_samples_seen: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_transcription_no_audio_secs: Option<u64>,
 }
 
 #[oasgen]
@@ -328,6 +350,22 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
         .filter(|count| *count > 0);
     let oldest_pending_transcription_at =
         audio_reconciliation_backlog.and_then(|(_, oldest)| oldest);
+    let live_transcription_health =
+        screenpipe_audio::meeting_streaming::live_transcription_health_snapshot();
+    let live_transcription_error_age_secs = live_transcription_health
+        .error_since
+        .map(|since| now.signed_duration_since(since).num_seconds().max(0) as u64);
+    let live_transcription_no_audio_secs =
+        live_transcription_health.updated_at.and_then(|updated| {
+            if live_transcription_health.active
+                && live_transcription_health.live_transcription_enabled
+                && live_transcription_health.audio_frames_seen == 0
+            {
+                Some(now.signed_duration_since(updated).num_seconds().max(0) as u64)
+            } else {
+                None
+            }
+        });
 
     // 60 seconds — tight enough to detect real stalls, loose enough to
     // tolerate adaptive FPS (0.1-0.5 fps) and brief DB contention spikes.
@@ -546,13 +584,29 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
     let audio_degraded = if !state.audio_disabled && audio_snap.uptime_secs > 120.0 {
         let channel_full = audio_snap.chunks_channel_full > 0;
         let transcription_backlog = pending_transcription_segments.is_some();
+        let live_transcription_unhealthy = live_transcription_error_age_secs.is_some_and(|age| {
+            age >= 10
+                && live_transcription_health.active
+                && live_transcription_health.live_transcription_enabled
+        });
+        let live_transcription_unavailable = live_transcription_error_age_secs.is_some_and(|age| {
+            age >= 10
+                && live_transcription_health.active
+                && !live_transcription_health.live_transcription_enabled
+        });
+        let live_audio_tap_stalled = live_transcription_no_audio_secs.is_some_and(|age| age >= 10);
         if channel_full {
             warn!(
                 "health_check: {} audio chunk(s) dropped (transcription engine too slow)",
                 audio_snap.chunks_channel_full
             );
         }
-        channel_full || audio_db_write_stalled || transcription_backlog
+        channel_full
+            || audio_db_write_stalled
+            || transcription_backlog
+            || live_transcription_unhealthy
+            || live_transcription_unavailable
+            || live_audio_tap_stalled
     } else {
         false
     };
@@ -633,6 +687,30 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
                     "{} audio segment(s) waiting for background transcription",
                     count
                 ));
+            }
+            if let (Some(error), Some(age)) = (
+                live_transcription_health.error.as_deref(),
+                live_transcription_error_age_secs,
+            ) {
+                if age >= 10 {
+                    detail_parts.push(format!(
+                        "live meeting transcription provider {} unhealthy for {}s: {}",
+                        live_transcription_health
+                            .provider
+                            .as_deref()
+                            .unwrap_or("unknown"),
+                        age,
+                        error
+                    ));
+                }
+            }
+            if let Some(age) = live_transcription_no_audio_secs {
+                if age >= 10 {
+                    detail_parts.push(format!(
+                        "live meeting transcription received 0 audio frames for {}s while background audio is active",
+                        age
+                    ));
+                }
             }
         }
 
@@ -796,6 +874,22 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
                 oldest_pending_transcription_at,
                 meeting_detected,
                 meeting_app,
+                live_transcription_active: Some(live_transcription_health.active),
+                live_transcription_enabled: Some(
+                    live_transcription_health.live_transcription_enabled,
+                ),
+                live_transcription_provider: live_transcription_health.provider.clone(),
+                live_transcription_error: live_transcription_health.error.clone(),
+                live_transcription_error_since: live_transcription_health.error_since,
+                live_transcription_error_age_secs,
+                live_transcription_last_transcript_at: live_transcription_health.last_transcript_at,
+                live_transcription_audio_frames_seen: Some(
+                    live_transcription_health.audio_frames_seen,
+                ),
+                live_transcription_audio_samples_seen: Some(
+                    live_transcription_health.audio_samples_seen,
+                ),
+                live_transcription_no_audio_secs,
             })
         } else {
             None

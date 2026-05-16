@@ -204,9 +204,15 @@ impl RecordingConfig {
             meeting_streaming: MeetingStreamingConfig::from_settings(
                 settings.meeting_live_transcription_enabled,
                 &settings.meeting_live_transcription_provider,
+                Some(engine_str.to_string()),
                 settings.effective_user_id().map(str::to_string),
-                match settings.meeting_live_transcription_provider.as_str() {
-                    "deepgram-live" | "deepgram_live" => Some(settings.deepgram_api_key.clone()),
+                match (
+                    settings.meeting_live_transcription_provider.as_str(),
+                    engine_str,
+                ) {
+                    ("deepgram-live" | "deepgram_live", _) | ("selected-engine", "deepgram") => {
+                        Some(settings.deepgram_api_key.clone())
+                    }
                     _ => None,
                 },
                 settings

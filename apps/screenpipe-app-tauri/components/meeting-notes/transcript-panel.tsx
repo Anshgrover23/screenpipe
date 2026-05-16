@@ -245,6 +245,21 @@ function liveErrorSummary(message: string | null): string {
   return "live transcription failed";
 }
 
+function liveProviderLabel(provider?: string | null): string {
+  switch (provider) {
+    case "screenpipe-cloud":
+      return "ScreenPipe Cloud live";
+    case "deepgram-live":
+      return "Deepgram live";
+    case "openai-realtime":
+      return "OpenAI realtime";
+    case "selected-engine":
+      return "selected engine";
+    default:
+      return "live provider";
+  }
+}
+
 export function TranscriptPanel({
   meeting,
   isOpen,
@@ -449,13 +464,36 @@ export function TranscriptPanel({
 
   const blocks = useMemo(() => groupBySpeaker(chunks), [chunks]);
   const visibleLiveBlocks = useMemo(() => {
-    const durableText = normalizeForDedupe(
-      chunks.map((c) => c.transcription ?? "").join(" "),
-    );
-    return liveBlocks.filter((block) => {
-      const normalized = normalizeForDedupe(block.text);
-      if (normalized.length < 24) return true;
-      return !durableText.includes(normalized.slice(0, 80));
+    const windowSecs = 5; // 5-second timestamp window for deduplication
+    return liveBlocks.filter((liveBlock) => {
+      const liveTimeSecs = timestampMs(liveBlock.capturedAt) / 1000;
+      const liveText = normalizeForDedupe(liveBlock.text);
+      if (liveText.length < 24) return true;
+
+      // Check if similar content exists in durable chunks within ±5s window
+      const hasSimilarContent = chunks.some((chunk) => {
+        const chunkTimeSecs = timestampMs(chunk.timestamp) / 1000;
+        const timeDiffSecs = Math.abs(liveTimeSecs - chunkTimeSecs);
+
+        // Must be within time window and same device
+        if (timeDiffSecs > windowSecs) return false;
+        if (chunk.deviceType !== liveBlock.deviceType) return false;
+
+        // Calculate text overlap
+        const chunkText = normalizeForDedupe(chunk.transcription ?? "");
+        const liveWords = new Set(liveText.split(" ").filter(w => w.length > 0));
+        const chunkWords = chunkText.split(" ").filter(w => w.length > 0);
+
+        if (liveWords.size === 0 && chunkWords.length === 0) return true;
+        if (liveWords.size === 0 || chunkWords.length === 0) return false;
+
+        const matchingWords = Array.from(liveWords).filter(w => chunkWords.includes(w)).length;
+        const overlapRatio = matchingWords / Math.max(liveWords.size, chunkWords.length);
+
+        return overlapRatio >= 0.7;
+      });
+
+      return !hasSimilarContent;
     });
   }, [chunks, liveBlocks]);
   const visibleLiveSpeakerBlocks = useMemo(
@@ -547,10 +585,40 @@ export function TranscriptPanel({
     scrollToLatest,
   ]);
 
+  const pendingTranscriptSegments =
+    health?.audio_pipeline?.pending_transcription_segments ?? 0;
+  const liveHealth = health?.audio_pipeline;
+  const liveHealthError = liveHealth?.live_transcription_error ?? null;
+  const liveHealthErrorAge =
+    liveHealth?.live_transcription_error_age_secs ?? 0;
+  const liveNoAudioSecs =
+    liveHealth?.live_transcription_no_audio_secs ?? 0;
+  const liveNoAudioIssue =
+    Boolean(
+      liveHealth?.live_transcription_active &&
+        liveHealth?.live_transcription_enabled &&
+        liveNoAudioSecs >= 10,
+    );
+  const liveHealthIssue =
+    liveHealthError ||
+    (liveNoAudioIssue
+      ? "live meeting transcription has not received audio frames"
+      : null);
+  const liveHealthIssueMessage =
+    liveHealthIssue ?? "live meeting transcription is not healthy";
+
   // Empty state copy depends on *why* the list is empty — the difference
   // matters: "still recording" vs "no audio captured" vs "no matches".
   const emptyCopy = useMemo(() => {
     if (loading && !loaded) return null;
+    if (
+      isLive &&
+      liveHealthIssue &&
+      chunks.length === 0 &&
+      visibleLiveBlocks.length === 0
+    ) {
+      return `${liveErrorSummary(liveHealthIssueMessage)}. Background recording is still running.`;
+    }
     if (liveError && chunks.length === 0 && visibleLiveBlocks.length === 0) {
       return `${liveErrorSummary(liveError)}. Background recording is still running.`;
     }
@@ -572,19 +640,32 @@ export function TranscriptPanel({
     loaded,
     isLive,
     liveError,
+    liveHealthIssue,
+    liveHealthIssueMessage,
   ]);
   const compactEmptyState =
     Boolean(emptyCopy) && !loading && !hasTranscriptContent;
   const showSearch = displayBlocks.length > 0 || Boolean(query.trim());
   const showFollowButton =
     isLive && !query.trim() && hasTranscriptContent && !isFollowingLive;
-  const pendingTranscriptSegments =
-    health?.audio_pipeline?.pending_transcription_segments ?? 0;
+  const showLiveHealthWarning =
+    isLive &&
+    Boolean(
+      liveHealth?.live_transcription_active &&
+        liveHealthIssue &&
+        (!liveHealth?.live_transcription_enabled ||
+          liveHealthErrorAge >= 10 ||
+          liveNoAudioSecs >= 10),
+    );
   const showRecoveryBanner =
     isLive &&
-    Boolean(liveError || (pendingTranscriptSegments > 0 && liveStatus?.active));
-  const recoveryMessage = liveError
-    ? `${liveErrorSummary(liveError)}. Still recording; background transcription will recover missing audio.`
+    Boolean(
+      showLiveHealthWarning ||
+        liveError ||
+        (pendingTranscriptSegments > 0 && liveStatus?.active),
+    );
+  const recoveryMessage = showLiveHealthWarning || liveError
+    ? "Live transcription paused. Recording continues; transcript will be recovered."
     : `Still recording; ${pendingTranscriptSegments} audio segment${
         pendingTranscriptSegments === 1 ? "" : "s"
       } waiting for background transcription.`;
@@ -640,7 +721,7 @@ export function TranscriptPanel({
         {showRecoveryBanner && (
           <div className="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-xs text-amber-900 dark:text-amber-200">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span className="leading-5">{recoveryMessage}</span>
+            <span className="min-w-0 flex-1 leading-5">{recoveryMessage}</span>
           </div>
         )}
 

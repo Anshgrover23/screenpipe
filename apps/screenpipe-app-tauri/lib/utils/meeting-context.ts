@@ -719,20 +719,45 @@ function mergeMeetingAudioChunks(
   cap: number,
 ): MeetingAudioChunk[] {
   const merged = sortAudioChunks([...liveRows, ...backgroundRows]);
-  const seen = new Set<string>();
   const out: MeetingAudioChunk[] = [];
+  const windowSecs = 5; // 5-second window for timestamp-based deduplication
 
   for (const chunk of merged) {
-    const key = [
-      Math.round(timestampMs(chunk.timestamp) / 1000),
-      chunk.deviceType,
-      chunk.speakerName,
-      chunk.transcription.replace(/\s+/g, " ").trim().toLowerCase(),
-    ].join("|");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(chunk);
-    if (out.length >= cap) break;
+    const chunkTimeSecs = Math.round(timestampMs(chunk.timestamp) / 1000);
+    const chunkText = chunk.transcription.replace(/\s+/g, " ").trim().toLowerCase();
+
+    // Check if similar content already exists in a ±5s window with same device/speaker
+    const isDuplicate = out.some((existing) => {
+      const existingTimeSecs = Math.round(timestampMs(existing.timestamp) / 1000);
+      const timeDiffSecs = Math.abs(chunkTimeSecs - existingTimeSecs);
+
+      // Must be within time window and same device/speaker
+      if (timeDiffSecs > windowSecs) return false;
+      if (existing.deviceType !== chunk.deviceType) return false;
+      if (existing.speakerName !== chunk.speakerName) return false;
+
+      // Calculate text overlap: if >70% of words match, consider it a duplicate
+      const existingText = existing.transcription.replace(/\s+/g, " ").trim().toLowerCase();
+      const existingWords = new Set(existingText.split(" ").filter(w => w.length > 0));
+      const chunkWords = chunkText.split(" ").filter(w => w.length > 0);
+
+      if (existingWords.size === 0 && chunkWords.length === 0) return true; // both empty
+      if (existingWords.size === 0 || chunkWords.length === 0) return false;
+
+      const matchingWords = chunkWords.filter(w => existingWords.has(w)).length;
+      const overlapRatio = matchingWords / Math.max(existingWords.size, chunkWords.length);
+
+      // If substantial overlap, prefer live source
+      if (overlapRatio >= 0.7) {
+        return existing.source === "live" || chunk.source === "background";
+      }
+      return false;
+    });
+
+    if (!isDuplicate) {
+      out.push(chunk);
+      if (out.length >= cap) break;
+    }
   }
 
   return out;
