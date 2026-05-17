@@ -12,6 +12,7 @@ import posthog from "posthog-js";
 import { User } from "../utils/tauri";
 import { SettingsStore } from "../utils/tauri";
 import { installAuthInterceptor } from "../auth-guard";
+import type { SourceCitation } from "@/lib/source-citations";
 export type VadSensitivity = "low" | "medium" | "high";
 
 export type AIProviderType =
@@ -80,6 +81,7 @@ export interface ChatMessage {
 	content: string;
 	timestamp: number;
 	contentBlocks?: any[];
+	sourceCitations?: SourceCitation[];
 	model?: string;
 	provider?: string;
 	/** UI override — when set, the sidebar / panel header renders this
@@ -242,6 +244,8 @@ export type Settings = SettingsStore & {
 	/** Experimental: capture System Audio via CoreAudio Process Tap (macOS 14.4+) instead of ScreenCaptureKit.
 	 *  Off by default. Ignored on macOS <14.4 and non-macOS — falls back to SCK. */
 	experimentalCoreaudioSystemAudio?: boolean;
+	/** Experimental: request Windows WASAPI microphone AEC when supported. */
+	windowsInputAecEnabled?: boolean;
 	/** Continue recording audio when the screen is locked (default: false) */
 	recordWhileLocked?: boolean;
 	/** Auto-delete local data older than retention days (free alternative to cloud archive) */
@@ -484,6 +488,7 @@ let DEFAULT_SETTINGS: Settings = {
 			pauseOnDrmContent: false,
 			disableClipboardCapture: false,
 			experimentalCoreaudioSystemAudio: false,
+			windowsInputAecEnabled: false,
 			recordWhileLocked: false,
 			localRetentionEnabled: false,
 			localRetentionDays: 14,
