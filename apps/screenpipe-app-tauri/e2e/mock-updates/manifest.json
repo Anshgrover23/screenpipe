@@ -1,0 +1,23 @@
+{
+  "version": "2.4.229",
+  "notes": "## What's Changed\n\n### Bug Fixes\n- **fix**: clean up ANTHROPIC_* env vars from shell config when server stops or app exits by @since-2017-hub in https://github.com/screenpipe/screenpipe/pull/7628\n- **fix**: add redirect from /guides to /docs by @louis-jan in https://github.com/screenpipe/screenpipe/pull/7669\n\n### Documentation\n- **docs**: update troubleshooting guides by @louis-jan in https://github.com/screenpipe/screenpipe/pull/7670\n- **docs**: restructure Reference by @louis-jan in https://github.com/screenpipe/screenpipe/pull/7674\n- **docs**: agents availability by @louis-jan in https://github.com/screenpipe/screenpipe/pull/7682\n- **docs**: add community cards to desktop overview by @louis-jan in https://github.com/screenpipe/screenpipe/pull/7687\n\n### Chores\n- **chore**: resolve release main conflict 0.78 by @Vanalite in https://github.com/screenpipe/screenpipe/pull/7713\n\n**Full Changelog**: https://github.com/screenpipe/screenpipe/releases/tag/v2.4.229",
+  "pub_date": "2026-05-17T12:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "",
+      "url": "http://127.0.0.1:8765/screenpipe-update.exe"
+    },
+    "darwin-aarch64": {
+      "signature": "",
+      "url": "http://127.0.0.1:8765/screenpipe-update-aarch64.app.tar.gz"
+    },
+    "darwin-x86_64": {
+      "signature": "",
+      "url": "http://127.0.0.1:8765/screenpipe-update-x86_64.app.tar.gz"
+    },
+    "linux-x86_64": {
+      "signature": "",
+      "url": "http://127.0.0.1:8765/screenpipe-update.tar.gz"
+    }
+  }
+}

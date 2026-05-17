@@ -1147,6 +1147,7 @@ async fn main() {
             ics_calendar::ics_calendar_get_upcoming,
             // Rollback commands
             commands::rollback_to_version,
+            commands::cancel_auto_restart,
             // OCR commands
             commands::perform_ocr_on_image,
             // Live Text (native macOS ImageAnalysisOverlayView)

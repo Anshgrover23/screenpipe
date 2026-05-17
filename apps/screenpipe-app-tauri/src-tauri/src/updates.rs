@@ -129,6 +129,8 @@ pub struct UpdatesManager {
     update_installed: Arc<Mutex<bool>>,
     /// Prevents concurrent check_for_updates calls (boot check + periodic race)
     is_checking: AtomicBool,
+    /// Flag to cancel the 30-second auto-restart countdown
+    pub cancel_restart: Arc<AtomicBool>,
 }
 
 impl UpdatesManager {
@@ -155,6 +157,7 @@ impl UpdatesManager {
             app: app.clone(),
             update_menu_item,
             is_checking: AtomicBool::new(false),
+            cancel_restart: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -489,7 +492,18 @@ impl UpdatesManager {
                     }),
                 );
                 save_pre_update_version(&self.app, update.body.clone());
-                tokio::time::sleep(Duration::from_secs(30)).await;
+
+                // 30-second countdown with cancellation support
+                let cancel_flag = self.cancel_restart.clone();
+                for _ in 0..30 {
+                    if cancel_flag.load(Ordering::SeqCst) {
+                        info!("auto-restart cancelled by user");
+                        cancel_flag.store(false, Ordering::SeqCst);
+                        return Ok(true);
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+
                 if let Err(err) =
                     stop_screenpipe(self.app.state::<RecordingState>(), self.app.clone()).await
                 {

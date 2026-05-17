@@ -1,0 +1,12 @@
+{
+  "plugins": {
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "endpoints": [
+        "http://127.0.0.1:8765/"
+      ],
+      "pubkey": ""
+    }
+  }
+}

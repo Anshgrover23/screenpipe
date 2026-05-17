@@ -1,9 +1,9 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { Sparkles, X } from "lucide-react";
+import { Download, X, RefreshCw, Sparkles } from "lucide-react";
 import { create } from "zustand";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { invoke } from "@tauri-apps/api/core";
@@ -12,6 +12,7 @@ import { platform, arch } from "@tauri-apps/plugin-os";
 import { useToast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
 import { useIsEnterpriseBuild } from "@/lib/hooks/use-is-enterprise-build";
+import ReactMarkdown from "react-markdown";
 
 interface UpdateInfo {
   version: string;
@@ -38,6 +39,10 @@ interface UpdateBannerState {
   downloadProgress: DownloadProgress | null;
   pendingUpdate: Update | null;
   authRequired: AuthRequiredInfo | null;
+  isRestarting: boolean;
+  restartCountdown: number | null;
+  restartVersion: string | null;
+  confirmingRestart: boolean;
   setIsVisible: (visible: boolean) => void;
   setUpdateInfo: (info: UpdateInfo | null) => void;
   setIsInstalling: (installing: boolean) => void;
@@ -45,6 +50,10 @@ interface UpdateBannerState {
   setDownloadProgress: (progress: DownloadProgress | null) => void;
   setPendingUpdate: (update: Update | null) => void;
   setAuthRequired: (info: AuthRequiredInfo | null) => void;
+  setIsRestarting: (restarting: boolean) => void;
+  setRestartCountdown: (countdown: number | null) => void;
+  setRestartVersion: (version: string | null) => void;
+  setConfirmingRestart: (confirming: boolean) => void;
 }
 
 export const useUpdateBanner = create<UpdateBannerState>((set) => ({
@@ -55,6 +64,10 @@ export const useUpdateBanner = create<UpdateBannerState>((set) => ({
   downloadProgress: null,
   pendingUpdate: null,
   authRequired: null,
+  isRestarting: false,
+  restartCountdown: null,
+  restartVersion: null,
+  confirmingRestart: false,
   setIsVisible: (visible) => set({ isVisible: visible }),
   setUpdateInfo: (info) => set({ updateInfo: info }),
   setIsInstalling: (installing) => set({ isInstalling: installing }),
@@ -62,6 +75,10 @@ export const useUpdateBanner = create<UpdateBannerState>((set) => ({
   setDownloadProgress: (progress) => set({ downloadProgress: progress }),
   setPendingUpdate: (update) => set({ pendingUpdate: update }),
   setAuthRequired: (info) => set({ authRequired: info }),
+  setIsRestarting: (restarting) => set({ isRestarting: restarting }),
+  setRestartCountdown: (countdown) => set({ restartCountdown: countdown }),
+  setRestartVersion: (version) => set({ restartVersion: version }),
+  setConfirmingRestart: (confirming) => set({ confirmingRestart: confirming }),
 }));
 
 interface UpdateBannerProps {
@@ -69,12 +86,69 @@ interface UpdateBannerProps {
   compact?: boolean;
 }
 
+const REMIND_ME_LATER_KEY = "screenpipe-remind-me-later";
+
 export function UpdateBanner({ className, compact = false }: UpdateBannerProps) {
+  const [showReleaseNotes, setShowReleaseNotes] = useState(false);
+  const [remindMeLaterTime, setRemindMeLaterTime] = useState<number | null>(null);
   const isEnterprise = useIsEnterpriseBuild();
-  const { isVisible, updateInfo, isInstalling, isDownloading, downloadProgress, setIsVisible, setIsInstalling, pendingUpdate, authRequired, setAuthRequired } = useUpdateBanner();
+  const {
+    isVisible, updateInfo, isInstalling, isDownloading, downloadProgress,
+    setIsVisible, setIsInstalling, pendingUpdate, authRequired, setAuthRequired,
+    isRestarting, restartCountdown, restartVersion, confirmingRestart,
+    setIsRestarting, setRestartCountdown, setConfirmingRestart
+  } = useUpdateBanner();
   const { toast } = useToast();
 
   if (isEnterprise) return null;
+
+  // Load "Remind Me Later" state from localStorage
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = localStorage.getItem(REMIND_ME_LATER_KEY);
+    if (stored) {
+      const remindTime = parseInt(stored, 10);
+      setRemindMeLaterTime(remindTime);
+      // If it's been more than 24 hours, reset the reminder
+      if (Date.now() - remindTime > 24 * 60 * 60 * 1000) {
+        localStorage.removeItem(REMIND_ME_LATER_KEY);
+        setRemindMeLaterTime(null);
+      }
+    }
+  }, []);
+
+  // Check if we should show based on "Remind Me Later"
+  const shouldShow = isVisible && updateInfo && (!remindMeLaterTime || Date.now() - remindMeLaterTime > 24 * 60 * 60 * 1000);
+
+  const handleRemindMeLater = () => {
+    const now = Date.now();
+    localStorage.setItem(REMIND_ME_LATER_KEY, now.toString());
+    setRemindMeLaterTime(now);
+    setIsVisible(false);
+  };
+
+  // Countdown timer effect
+  useEffect(() => {
+    if (!isRestarting || restartCountdown === null) return;
+    if (restartCountdown <= 0) return;
+    const timer = setTimeout(() => setRestartCountdown(restartCountdown - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [isRestarting, restartCountdown, setRestartCountdown]);
+
+  const handlePostpone = async () => {
+    try {
+      await invoke("cancel_auto_restart");
+      setIsRestarting(false);
+      setRestartCountdown(null);
+    } catch (error) {
+      console.error("failed to cancel auto-restart:", error);
+      toast({
+        title: "error",
+        description: "failed to postpone update",
+        variant: "destructive",
+      });
+    }
+  };
 
   const handleUpdate = async () => {
     setIsInstalling(true);
@@ -137,6 +211,60 @@ export function UpdateBanner({ className, compact = false }: UpdateBannerProps) 
       });
     }
   };
+
+  // Show countdown banner when auto-restart is imminent (highest priority)
+  if (isRestarting && restartCountdown !== null) {
+    if (compact) {
+      return (
+        <div className={cn("flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400", className)}>
+          <RefreshCw className="h-3 w-3 animate-spin" />
+          <span>restarting in <span className="font-semibold tabular-nums">{restartCountdown}s</span></span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-5 px-2 text-xs"
+            onClick={handlePostpone}
+          >
+            postpone
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <div className={cn(
+        "flex items-center justify-between gap-3 px-3 py-2 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-800 text-sm",
+        className
+      )}>
+        <div className="flex items-center gap-2 flex-1">
+          <RefreshCw className="h-4 w-4 text-amber-600 dark:text-amber-500 animate-spin" />
+          <span>
+            screenpipe restarts in <span className="font-semibold tabular-nums">{restartCountdown}s</span>
+            {restartVersion && <> to install <span className="font-medium">v{restartVersion}</span></>}
+            {" — "}active recordings will be interrupted
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="default"
+            size="sm"
+            className="h-7 px-3 text-xs"
+            onClick={handleUpdate}
+            disabled={isInstalling}
+          >
+            {isInstalling ? "restarting..." : "restart now"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-3 text-xs"
+            onClick={handlePostpone}
+          >
+            postpone
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   // Show auth-required state — user needs to sign in to download updates
   if (authRequired) {
@@ -219,13 +347,71 @@ export function UpdateBanner({ className, compact = false }: UpdateBannerProps) 
 
   if (!isVisible || !updateInfo) return null;
 
+  // Show confirmation step for manual restart (Codex-style)
+  if (confirmingRestart) {
+    if (compact) {
+      return (
+        <div className={cn("flex items-center gap-2 text-xs", className)}>
+          <span>screenpipe will restart to apply v{updateInfo.version}</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-5 px-2 text-xs"
+            onClick={() => setConfirmingRestart(false)}
+          >
+            cancel
+          </Button>
+          <Button
+            variant="default"
+            size="sm"
+            className="h-5 px-2 text-xs"
+            onClick={handleUpdate}
+            disabled={isInstalling}
+          >
+            {isInstalling ? "restarting..." : "restart now"}
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <div className={cn(
+        "flex items-center justify-between gap-3 px-3 py-2 bg-blue-50 dark:bg-blue-950/30 border-b border-blue-200 dark:border-blue-800 text-sm",
+        className
+      )}>
+        <span>
+          screenpipe will quit to install <span className="font-medium">v{updateInfo.version}</span>,
+          interrupting active recordings
+        </span>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-3 text-xs"
+            onClick={() => setConfirmingRestart(false)}
+          >
+            cancel
+          </Button>
+          <Button
+            variant="default"
+            size="sm"
+            className="h-7 px-3 text-xs"
+            onClick={handleUpdate}
+            disabled={isInstalling}
+          >
+            {isInstalling ? "restarting..." : "restart now"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   if (compact) {
     return (
       <div className={cn(
         "flex items-center gap-2 text-xs text-muted-foreground",
         className
       )}>
-        <Sparkles className="h-3 w-3 text-primary" />
+        <Download className="h-3 w-3 text-primary" />
         {isDownloading ? (
           <>
             <span>downloading v{updateInfo.version}... {downloadProgress?.percent ?? 0}%</span>
@@ -237,7 +423,7 @@ export function UpdateBanner({ className, compact = false }: UpdateBannerProps) 
               variant="ghost"
               size="sm"
               className="h-5 px-2 text-xs"
-              onClick={handleUpdate}
+              onClick={() => setConfirmingRestart(true)}
               disabled={isInstalling}
             >
               {isInstalling ? "restarting..." : "restart to update"}
@@ -248,13 +434,107 @@ export function UpdateBanner({ className, compact = false }: UpdateBannerProps) 
     );
   }
 
+  // Show the Jan-style modal card at bottom-right when update is available
+  if (shouldShow) {
+    return (
+      <div className={cn(
+        "fixed bottom-4 right-4 z-50 bg-background border rounded-lg shadow-xl max-w-sm",
+        className
+      )}>
+        <div className="p-4">
+          {/* Header with version and icon */}
+          <div className="flex items-start gap-3 mb-3">
+            <Download className="h-5 w-5 shrink-0 text-muted-foreground mt-0.5" />
+            <div className="flex-1">
+              <div className="text-base font-semibold">
+                New Version {updateInfo.version}
+              </div>
+              <div className="text-sm text-muted-foreground">
+                Update Available
+              </div>
+            </div>
+          </div>
+
+          {/* Release notes section */}
+          {showReleaseNotes && updateInfo.body && (
+            <div className="mb-4 p-3 bg-muted/30 rounded max-h-80 overflow-y-auto">
+              <div className="text-xs text-foreground prose prose-sm dark:prose-invert">
+                <ReactMarkdown
+                  components={{
+                    a: ({ ...props }) => (
+                      <a
+                        {...props}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-500 hover:underline"
+                      />
+                    ),
+                    h2: ({ ...props }) => (
+                      <h2 {...props} className="text-sm font-semibold mt-2 mb-1" />
+                    ),
+                    h3: ({ ...props }) => (
+                      <h3 {...props} className="text-xs font-semibold mt-1.5 mb-0.5" />
+                    ),
+                    ul: ({ ...props }) => (
+                      <ul {...props} className="list-disc list-inside space-y-1 text-xs" />
+                    ),
+                    li: ({ ...props }) => (
+                      <li {...props} className="text-xs" />
+                    ),
+                    p: ({ ...props }) => (
+                      <p {...props} className="text-xs mb-1" />
+                    ),
+                  }}
+                >
+                  {updateInfo.body}
+                </ReactMarkdown>
+              </div>
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div className="flex items-center justify-between gap-2 pt-2 border-t">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowReleaseNotes(!showReleaseNotes)}
+              className="text-xs h-8"
+            >
+              {showReleaseNotes ? "Hide Release Notes" : "Show Release Notes"}
+            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleRemindMeLater}
+                className="text-xs h-8"
+              >
+                Remind Me Later
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => setConfirmingRestart(true)}
+                disabled={isInstalling}
+                className="text-xs h-8"
+              >
+                {isInstalling ? "updating..." : "Update Now"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Fallback for other states - keep as banner
   return (
     <div className={cn(
       "flex items-center justify-between gap-3 px-3 py-2 bg-muted/50 border-b text-sm",
       className
     )}>
       <div className="flex items-center gap-2 flex-1">
-        <Sparkles className="h-4 w-4 text-primary" />
+        <Download className="h-4 w-4 text-primary" />
         {isDownloading ? (
           <div className="flex items-center gap-2 flex-1">
             <span>downloading <span className="font-medium">v{updateInfo.version}</span></span>
@@ -278,7 +558,7 @@ export function UpdateBanner({ className, compact = false }: UpdateBannerProps) 
             variant="default"
             size="sm"
             className="h-7 px-3 text-xs"
-            onClick={handleUpdate}
+            onClick={() => setConfirmingRestart(true)}
             disabled={isInstalling}
           >
             {isInstalling ? "restarting..." : "restart to update"}
@@ -299,7 +579,10 @@ export function UpdateBanner({ className, compact = false }: UpdateBannerProps) 
 
 // Hook to listen for update events from Rust
 export function useUpdateListener() {
-  const { setIsVisible, setUpdateInfo, setIsDownloading, setDownloadProgress, setAuthRequired } = useUpdateBanner();
+  const {
+    setIsVisible, setUpdateInfo, setIsDownloading, setDownloadProgress, setAuthRequired,
+    setIsRestarting, setRestartCountdown, setRestartVersion
+  } = useUpdateBanner();
 
   useEffect(() => {
     let unlistenAvailable: (() => void) | undefined;
@@ -307,6 +590,7 @@ export function useUpdateListener() {
     let unlistenDownloading: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
     let unlistenAuth: (() => void) | undefined;
+    let unlistenRestarting: (() => void) | undefined;
 
     const setupListeners = async () => {
       // Listen for download starting (shows banner immediately)
@@ -340,6 +624,14 @@ export function useUpdateListener() {
         setIsDownloading(false);
         setDownloadProgress(null);
       });
+
+      // Listen for auto-restart countdown (30 seconds before app restarts)
+      unlistenRestarting = await listen<{ version: string; delay_secs: number }>("update-restarting", (event) => {
+        setIsRestarting(true);
+        setRestartCountdown(event.payload.delay_secs);
+        setRestartVersion(event.payload.version);
+        setIsVisible(true);
+      });
     };
 
     setupListeners();
@@ -350,6 +642,7 @@ export function useUpdateListener() {
       unlistenDownloading?.();
       unlistenProgress?.();
       unlistenAuth?.();
+      unlistenRestarting?.();
     };
   }, [setIsVisible, setUpdateInfo, setIsDownloading, setDownloadProgress, setAuthRequired]);
 }

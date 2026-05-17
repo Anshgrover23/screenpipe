@@ -17,7 +17,6 @@ import { Button } from "@/components/ui/button";
 import { Settings } from "@/lib/hooks/use-settings";
 import { getVersion } from "@tauri-apps/api/app";
 import { commands } from "@/lib/utils/tauri";
-import { UpdateBanner } from "@/components/update-banner";
 import { useIsEnterpriseBuild } from "@/lib/hooks/use-is-enterprise-build";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 
@@ -26,6 +25,7 @@ export default function GeneralSettings() {
   const { settings, updateSettings } = useSettings();
   const { toast } = useToast();
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
 
   useEffect(() => {
     getVersion().then(setCurrentVersion).catch(() => {});
@@ -47,6 +47,35 @@ export default function GeneralSettings() {
       return null;
     }
     return null;
+  };
+
+  const handleCheckForUpdate = async () => {
+    setIsCheckingUpdate(true);
+    try {
+      // Reset the "Remind Me Later" flag to show the update dialog if available
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("screenpipe-remind-me-later");
+      }
+      // Trigger the update check via Rust command
+      const updateFound = await commands.checkForUpdates();
+      if (!updateFound) {
+        toast({
+          title: "up to date",
+          description: "you're running the latest version of screenpipe",
+        });
+      }
+      // Small delay to allow the update banner to appear
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (error) {
+      console.error("failed to check for updates:", error);
+      toast({
+        title: "update check failed",
+        description: "please try again later",
+        variant: "destructive",
+      });
+    } finally {
+      setIsCheckingUpdate(false);
+    }
   };
 
   const handleOpenVersions = async () => {
@@ -78,10 +107,6 @@ export default function GeneralSettings() {
         Startup, updates, and notifications
       </p>
 
-      <div className="flex items-center justify-end">
-          <UpdateBanner compact />
-      </div>
-
       <div className="space-y-2">
         <LockedSetting settingKey="auto_start">
         <Card className="border-border bg-card">
@@ -106,6 +131,31 @@ export default function GeneralSettings() {
           </CardContent>
         </Card>
         </LockedSetting>
+
+        {!isEnterprise && (
+          <Card className="border-border bg-card">
+            <CardContent className="px-3 py-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2.5">
+                  <RefreshCw className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <div>
+                    <h3 className="text-sm font-medium text-foreground">Check for Updates</h3>
+                    <p className="text-xs text-muted-foreground">Check if a newer version of screenpipe is available</p>
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCheckForUpdate}
+                  disabled={isCheckingUpdate}
+                  className="ml-4 h-7 text-xs"
+                >
+                  {isCheckingUpdate ? "checking..." : "Check for Updates"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {!isEnterprise && (
           <Card className="border-border bg-card">

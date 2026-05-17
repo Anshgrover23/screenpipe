@@ -2538,6 +2538,19 @@ pub async fn rollback_to_version(
     app_handle.restart();
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn cancel_auto_restart(
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    use crate::updates::UpdatesManager;
+
+    let state = app_handle.state::<std::sync::Arc<UpdatesManager>>();
+    state.cancel_restart.store(true, std::sync::atomic::Ordering::SeqCst);
+    info!("auto-restart cancellation requested by user");
+    Ok(())
+}
+
 /// Perform OCR on a base64-encoded PNG image crop, using the user's configured OCR engine.
 #[tauri::command]
 #[specta::specta]
@@ -2923,4 +2936,11 @@ fn dir_size(path: &std::path::Path) -> u64 {
         }
     }
     total
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn check_for_updates(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    let state = app_handle.state::<std::sync::Arc<crate::updates::UpdatesManager>>();
+    state.check_for_updates(true).await.map_err(|e| e.to_string())
 }
