@@ -38,6 +38,63 @@ fn read_lines_lossy(reader: &mut BufReader<impl std::io::Read>) -> Option<String
         }
     }
 }
+
+const TEXT_DELTA_EMIT_BATCH_MS: u128 = 50;
+const TEXT_DELTA_EMIT_BATCH_CHARS: usize = 1_200;
+
+struct PendingAgentTextDelta {
+    event: Value,
+    delta: String,
+    started_at: std::time::Instant,
+}
+
+fn assistant_text_delta(event: &Value) -> Option<&str> {
+    if event.get("type").and_then(|t| t.as_str()) != Some("message_update") {
+        return None;
+    }
+    let assistant_event = event.get("assistantMessageEvent")?;
+    if assistant_event.get("type").and_then(|t| t.as_str()) != Some("text_delta") {
+        return None;
+    }
+    assistant_event.get("delta").and_then(|d| d.as_str())
+}
+
+fn set_assistant_text_delta(event: &mut Value, delta: String) {
+    if let Some(assistant_event) = event
+        .get_mut("assistantMessageEvent")
+        .and_then(|v| v.as_object_mut())
+    {
+        assistant_event.insert("delta".to_string(), Value::String(delta));
+    }
+}
+
+fn emit_agent_event(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    event: Value,
+) -> Result<(), tauri::Error> {
+    app.emit(
+        "agent_event",
+        json!({
+            "source": "pi",
+            "sessionId": session_id,
+            "event": event,
+        }),
+    )
+}
+
+fn flush_pending_text_delta(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    pending: &mut Option<PendingAgentTextDelta>,
+) {
+    if let Some(mut pending_delta) = pending.take() {
+        set_assistant_text_delta(&mut pending_delta.event, pending_delta.delta);
+        if let Err(e) = emit_agent_event(app, session_id, pending_delta.event) {
+            error!("Failed to emit coalesced agent_event: {}", e);
+        }
+    }
+}
 #[cfg(windows)]
 use std::path::Path;
 use std::path::PathBuf;
@@ -1125,7 +1182,10 @@ pub async fn pi_start_inner(
             .min_by_key(|(_, m)| m.last_activity)
             .map(|(k, _)| k.clone());
         if let Some(key) = evict_key {
-            info!("Evicting idle Pi session '{}' to make room for '{}'", key, sid);
+            info!(
+                "Evicting idle Pi session '{}' to make room for '{}'",
+                key, sid
+            );
             if let Some(mut m) = pool.sessions.remove(&key) {
                 m.stop();
             }
@@ -1505,9 +1565,11 @@ pub async fn pi_start_inner(
         );
         let mut line_count = 0u64;
         let mut ready_signalled = false;
+        let mut pending_text_delta: Option<PendingAgentTextDelta> = None;
         while let Some(line) = read_lines_lossy(&mut reader) {
             line_count += 1;
             let parsed = serde_json::from_str::<Value>(&line).ok();
+            let is_stdout_text_delta = parsed.as_ref().and_then(assistant_text_delta).is_some();
             let event_type = parsed.as_ref().and_then(|v| {
                 v.get("type")
                     .and_then(|t| t.as_str())
@@ -1617,29 +1679,51 @@ pub async fn pi_start_inner(
                             }
                         }
                     }
-                    // Frontend subscribes via the agent-event bus
-                    // (`apps/screenpipe-app-tauri/lib/events/bus.ts`).
-                    // Stage 5 cleanup: legacy `pi_event` topic removed
-                    // — every consumer now reads from `agent_event`.
-                    let unified = json!({
-                        "source": "pi",
-                        "sessionId": sid_clone,
-                        "event": event,
-                    });
-                    if let Err(e) = app_handle.emit("agent_event", &unified) {
-                        error!("Failed to emit agent_event: {}", e);
+
+                    if let Some(delta) = assistant_text_delta(&event).map(str::to_owned) {
+                        let pending =
+                            pending_text_delta.get_or_insert_with(|| PendingAgentTextDelta {
+                                event: event.clone(),
+                                delta: String::new(),
+                                started_at: std::time::Instant::now(),
+                            });
+                        pending.event = event;
+                        pending.delta.push_str(&delta);
+
+                        if pending.delta.len() >= TEXT_DELTA_EMIT_BATCH_CHARS
+                            || pending.started_at.elapsed().as_millis() >= TEXT_DELTA_EMIT_BATCH_MS
+                        {
+                            flush_pending_text_delta(
+                                &app_handle,
+                                &sid_clone,
+                                &mut pending_text_delta,
+                            );
+                        }
+                    } else {
+                        flush_pending_text_delta(&app_handle, &sid_clone, &mut pending_text_delta);
+                        // Frontend subscribes via the agent-event bus
+                        // (`apps/screenpipe-app-tauri/lib/events/bus.ts`).
+                        // Stage 5 cleanup: legacy `pi_event` topic removed
+                        // — every consumer now reads from `agent_event`.
+                        if let Err(e) = emit_agent_event(&app_handle, &sid_clone, event) {
+                            error!("Failed to emit agent_event: {}", e);
+                        }
                     }
                 }
                 None => {
+                    flush_pending_text_delta(&app_handle, &sid_clone, &mut pending_text_delta);
                     let end = line.len().min(100);
                     let end = line.floor_char_boundary(end);
                     warn!("Pi stdout not JSON: (line: {})", &line[..end]);
                 }
             }
-            if let Err(e) = app_handle.emit("pi_output", &line) {
-                error!("Failed to emit pi_output: {}", e);
+            if !is_stdout_text_delta {
+                if let Err(e) = app_handle.emit("pi_output", &line) {
+                    error!("Failed to emit pi_output: {}", e);
+                }
             }
         }
+        flush_pending_text_delta(&app_handle, &sid_clone, &mut pending_text_delta);
         info!(
             "Pi stdout reader ended (pid: {}, session: {}), processed {} lines",
             pid, sid_clone, line_count
@@ -1812,6 +1896,47 @@ pub async fn pi_prompt(
             crate::pi_command_queue::WaitMode::WriteOnly,
             message.clone(),
         )
+        .await?;
+    rx.await
+        .map_err(|_| "Pi command queue dropped".to_string())?
+}
+
+/// Steer the active Pi reply using Pi's native steering command.
+/// Unlike `pi_prompt`, this is intentionally not added to the follow-up queue:
+/// Pi interrupts the current stream and resumes with the steering instruction.
+#[tauri::command]
+#[specta::specta]
+pub async fn pi_steer(
+    state: State<'_, PiState>,
+    session_id: Option<String>,
+    message: String,
+    images: Option<Vec<PiImageContent>>,
+) -> Result<(), String> {
+    let sid = session_id.unwrap_or_else(|| "chat".to_string());
+    let queue = {
+        let mut pool = state.0.lock().await;
+        let m = pool.sessions.get_mut(&sid).ok_or("Pi not initialized")?;
+        if !m.is_running() {
+            return Err("Pi is not running".to_string());
+        }
+        m.last_activity = std::time::Instant::now();
+        m.queue_handle
+            .clone()
+            .ok_or("Pi command queue not initialized")?
+    };
+
+    let mut cmd = json!({
+        "type": "steer",
+        "message": message,
+    });
+    if let Some(imgs) = images {
+        if !imgs.is_empty() {
+            cmd["images"] = serde_json::to_value(imgs).map_err(|e| e.to_string())?;
+        }
+    }
+
+    let rx = queue
+        .send(cmd, crate::pi_command_queue::WaitMode::WriteOnly)
         .await?;
     rx.await
         .map_err(|_| "Pi command queue dropped".to_string())?

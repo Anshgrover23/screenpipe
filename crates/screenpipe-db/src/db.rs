@@ -11,6 +11,8 @@ use sqlx::migrate::MigrateDatabase;
 use sqlx::pool::PoolConnection;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::Column;
+use sqlx::ConnectOptions;
+use sqlx::Connection;
 use sqlx::Error as SqlxError;
 use sqlx::Row;
 use sqlx::Sqlite;
@@ -31,10 +33,10 @@ use crate::{
     text_similarity::is_similar_transcription, AudioChunksResponse, AudioDevice, AudioEntry,
     AudioResult, AudioResultRaw, ContentType, DeviceType, Element, ElementRow, ElementSource,
     FrameData, FrameRow, FrameRowLight, FrameWindowData, InsertUiEvent, MeetingRecord,
-    MeetingTranscriptSegment, MemoryRecord, MemorySyncRow, OCREntry, OCRResult, OCRResultRaw,
-    OcrEngine, OcrTextBlock, Order, SearchMatch, SearchMatchGroup, SearchResult, Speaker,
-    TagContentType, TextBounds, TextPosition, TimeSeriesChunk, UiContent, UiEventRecord,
-    UiEventRow, VideoMetadata,
+    MeetingTranscriptSegment, MemoryRecord, MemorySyncRow, NewDiarizationSegment, OCREntry,
+    OCRResult, OCRResultRaw, OcrEngine, OcrTextBlock, Order, ReplacementAudioTranscription,
+    SearchMatch, SearchMatchGroup, SearchResult, Speaker, TagContentType, TextBounds, TextPosition,
+    TimeSeriesChunk, UiContent, UiEventRecord, UiEventRow, VideoMetadata,
 };
 
 /// Time window (in seconds) to check for similar transcriptions across devices.
@@ -299,6 +301,21 @@ impl DatabaseManager {
             // during idle periods instead. WAL grows to ~16MB max (+12MB).
             // Crash recovery: ~200ms replay at most.
             .pragma("wal_autocheckpoint", "4000");
+
+        // Fresh DB conversion to journal_mode=WAL requires an exclusive lock.
+        // When the pool opens read_pool + write_pool connections concurrently,
+        // each connection tries the WAL conversion and they race, with losers
+        // failing initialization with SQLITE_BUSY ("database is locked")
+        // (~50% reproduction with fresh data-dir). Pre-converting via a single
+        // connection before pool creation makes pool connections see a WAL'd
+        // DB and skip conversion entirely — no race.
+        {
+            let mut conn = connect_options.connect().await?;
+            sqlx::query("PRAGMA journal_mode=WAL")
+                .execute(&mut conn)
+                .await?;
+            conn.close().await?;
+        }
 
         // Read pool: handles all SELECT queries (search, timeline, API, pipes).
         let read_pool = SqlitePoolOptions::new()
@@ -1024,27 +1041,6 @@ impl DatabaseManager {
              LEFT JOIN audio_transcriptions at ON ac.id = at.audio_chunk_id
              WHERE at.id IS NULL
                AND ac.timestamp >= ?1
-               AND NOT EXISTS (
-                 SELECT 1
-                 FROM meetings m
-                 WHERE EXISTS (
-                     SELECT 1
-                     FROM meeting_transcript_segments mts
-                     WHERE mts.meeting_id = m.id
-                   )
-                   AND julianday(ac.timestamp) >= julianday(datetime(m.meeting_start, '-60 seconds'))
-                   AND julianday(ac.timestamp) <= julianday(datetime(
-                     COALESCE(
-                       m.meeting_end,
-                       (
-                         SELECT datetime(MAX(mts2.captured_at), '+10 minutes')
-                         FROM meeting_transcript_segments mts2
-                         WHERE mts2.meeting_id = m.id
-                       )
-                     ),
-                     '+60 seconds'
-                   ))
-               )
              ORDER BY ac.timestamp DESC
              LIMIT ?2",
         )
@@ -1075,27 +1071,6 @@ impl DatabaseManager {
                AND ac.timestamp >= ?1
                AND ac.timestamp <= ?2
                AND ac.file_path NOT LIKE 'cloud://%'
-               AND NOT EXISTS (
-                 SELECT 1
-                 FROM meetings m
-                 WHERE EXISTS (
-                     SELECT 1
-                     FROM meeting_transcript_segments mts
-                     WHERE mts.meeting_id = m.id
-                   )
-                   AND julianday(ac.timestamp) >= julianday(datetime(m.meeting_start, '-60 seconds'))
-                   AND julianday(ac.timestamp) <= julianday(datetime(
-                     COALESCE(
-                       m.meeting_end,
-                       (
-                         SELECT datetime(MAX(mts2.captured_at), '+10 minutes')
-                         FROM meeting_transcript_segments mts2
-                         WHERE mts2.meeting_id = m.id
-                       )
-                     ),
-                     '+60 seconds'
-                   ))
-               )
              ORDER BY ac.timestamp ASC
              LIMIT ?3",
         )
@@ -1105,6 +1080,56 @@ impl DatabaseManager {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// Returns one orphaned audio chunk if it is currently eligible for
+    /// background transcription reconciliation.
+    pub async fn get_reconciliation_candidate_chunk_by_id(
+        &self,
+        chunk_id: i64,
+        since: DateTime<Utc>,
+        older_than: DateTime<Utc>,
+    ) -> Result<Option<UntranscribedChunk>, sqlx::Error> {
+        let row = sqlx::query_as::<_, UntranscribedChunk>(
+            "SELECT ac.id, ac.file_path, ac.timestamp
+             FROM audio_chunks ac
+             LEFT JOIN audio_transcriptions at ON ac.id = at.audio_chunk_id
+             WHERE ac.id = ?1
+               AND at.id IS NULL
+               AND ac.timestamp >= ?2
+               AND ac.timestamp <= ?3
+               AND ac.file_path NOT LIKE 'cloud://%'
+             LIMIT 1",
+        )
+        .bind(chunk_id)
+        .bind(since)
+        .bind(older_than)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Returns a compact summary of audio chunks that are ready for background
+    /// transcription reconciliation.
+    pub async fn get_reconciliation_backlog_summary(
+        &self,
+        since: DateTime<Utc>,
+        older_than: DateTime<Utc>,
+    ) -> Result<(i64, Option<DateTime<Utc>>), sqlx::Error> {
+        let summary = sqlx::query_as::<_, (i64, Option<DateTime<Utc>>)>(
+            "SELECT COUNT(*) as count, MIN(ac.timestamp) as oldest_timestamp
+             FROM audio_chunks ac
+             LEFT JOIN audio_transcriptions at ON ac.id = at.audio_chunk_id
+             WHERE at.id IS NULL
+               AND ac.timestamp >= ?1
+               AND ac.timestamp <= ?2
+               AND ac.file_path NOT LIKE 'cloud://%'",
+        )
+        .bind(since)
+        .bind(older_than)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(summary)
     }
 
     /// Returns true if there are audio transcriptions from output devices
@@ -1409,15 +1434,42 @@ impl DatabaseManager {
         duration_secs: Option<f64>,
         speaker_id: Option<i64>,
     ) -> Result<(), sqlx::Error> {
-        // Skip empty transcriptions
         let trimmed = transcription.trim();
         if trimmed.is_empty() {
             return Ok(());
         }
+        let end_time = duration_secs.unwrap_or(0.0);
+        let segments = vec![ReplacementAudioTranscription {
+            transcription: trimmed.to_string(),
+            speaker_id,
+            start_time: 0.0,
+            end_time,
+        }];
 
-        let text_length = trimmed.len() as i64;
-        let start_time: f64 = 0.0;
-        let end_time: f64 = duration_secs.unwrap_or(0.0);
+        self.replace_audio_transcriptions(
+            audio_chunk_id,
+            &segments,
+            engine,
+            device,
+            is_input_device,
+            timestamp,
+        )
+        .await
+    }
+
+    pub async fn replace_audio_transcriptions(
+        &self,
+        audio_chunk_id: i64,
+        segments: &[ReplacementAudioTranscription],
+        engine: &str,
+        device: &str,
+        is_input_device: bool,
+        timestamp: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        if segments.is_empty() {
+            return Ok(());
+        }
+
         let mut tx = self.begin_immediate_with_retry().await?;
 
         sqlx::query("DELETE FROM audio_transcriptions WHERE audio_chunk_id = ?1")
@@ -1425,25 +1477,116 @@ impl DatabaseManager {
             .execute(&mut **tx.conn())
             .await?;
 
-        sqlx::query(
-            "INSERT INTO audio_transcriptions (audio_chunk_id, transcription, text_length, offset_index, timestamp, transcription_engine, device, is_input_device, start_time, end_time, speaker_id)
-             VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        )
-        .bind(audio_chunk_id)
-        .bind(trimmed)
-        .bind(text_length)
-        .bind(timestamp)
-        .bind(engine)
-        .bind(device)
-        .bind(is_input_device)
-        .bind(start_time)
-        .bind(end_time)
-        .bind(speaker_id)
-        .execute(&mut **tx.conn())
-        .await?;
+        for (offset_index, segment) in segments.iter().enumerate() {
+            let trimmed = segment.transcription.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let text_length = trimmed.len() as i64;
+
+            sqlx::query(
+                "INSERT INTO audio_transcriptions (audio_chunk_id, transcription, text_length, offset_index, timestamp, transcription_engine, device, is_input_device, start_time, end_time, speaker_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            )
+            .bind(audio_chunk_id)
+            .bind(trimmed)
+            .bind(text_length)
+            .bind(offset_index as i64)
+            .bind(timestamp)
+            .bind(engine)
+            .bind(device)
+            .bind(is_input_device)
+            .bind(segment.start_time)
+            .bind(segment.end_time)
+            .bind(segment.speaker_id)
+            .execute(&mut **tx.conn())
+            .await?;
+        }
 
         tx.commit().await?;
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_diarization_run_with_segments(
+        &self,
+        audio_chunk_id: i64,
+        mode: &str,
+        provider: &str,
+        model: Option<&str>,
+        metadata: Option<&str>,
+        segments: &[NewDiarizationSegment],
+    ) -> Result<Option<i64>, sqlx::Error> {
+        if segments.is_empty() {
+            return Ok(None);
+        }
+
+        let mut tx = self.begin_immediate_with_retry().await?;
+        let diarization_run_id = sqlx::query(
+            "INSERT INTO diarization_runs (audio_chunk_id, mode, provider, model, metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(audio_chunk_id)
+        .bind(mode)
+        .bind(provider)
+        .bind(model)
+        .bind(metadata)
+        .execute(&mut **tx.conn())
+        .await?
+        .last_insert_rowid();
+
+        for segment in segments {
+            if segment.end_time <= segment.start_time {
+                debug!(
+                    "skipping invalid diarization segment for chunk {}: {:.3}..{:.3}",
+                    audio_chunk_id, segment.start_time, segment.end_time
+                );
+                continue;
+            }
+
+            let diarization_segment_id = sqlx::query(
+                "INSERT INTO diarization_segments (
+                    diarization_run_id, audio_chunk_id, provider_speaker_label,
+                    speaker_id, source, start_time, end_time, confidence, overlap, metadata
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )
+            .bind(diarization_run_id)
+            .bind(audio_chunk_id)
+            .bind(segment.provider_speaker_label.as_str())
+            .bind(segment.speaker_id)
+            .bind(segment.source.as_str())
+            .bind(segment.start_time)
+            .bind(segment.end_time)
+            .bind(segment.confidence)
+            .bind(segment.overlap)
+            .bind(segment.metadata.as_deref())
+            .execute(&mut **tx.conn())
+            .await?
+            .last_insert_rowid();
+
+            if let Some(speaker_id) = segment.speaker_id {
+                sqlx::query(
+                    "INSERT INTO speaker_identity_evidence (
+                        speaker_id, diarization_segment_id, audio_chunk_id,
+                        start_time, end_time, source, confidence, approved, metadata
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                )
+                .bind(speaker_id)
+                .bind(diarization_segment_id)
+                .bind(audio_chunk_id)
+                .bind(segment.start_time)
+                .bind(segment.end_time)
+                .bind(segment.source.as_str())
+                .bind(segment.confidence)
+                .bind(segment.source == "manual")
+                .bind(segment.metadata.as_deref())
+                .execute(&mut **tx.conn())
+                .await?;
+            }
+        }
+
+        tx.commit().await?;
+        Ok(Some(diarization_run_id))
     }
 
     /// Get audio chunks and their transcriptions within a time range.
@@ -3402,7 +3545,67 @@ impl DatabaseManager {
                 audio_transcriptions.is_input_device,
                 audio_transcriptions.speaker_id,
                 audio_transcriptions.start_time,
-                audio_transcriptions.end_time
+                audio_transcriptions.end_time,
+                (
+                    SELECT dr.mode
+                    FROM diarization_segments ds
+                    JOIN diarization_runs dr ON dr.id = ds.diarization_run_id
+                    WHERE ds.audio_chunk_id = audio_transcriptions.audio_chunk_id
+                      AND audio_transcriptions.start_time IS NOT NULL
+                      AND audio_transcriptions.end_time IS NOT NULL
+                      AND ABS(ds.start_time - audio_transcriptions.start_time) < 0.05
+                      AND ABS(ds.end_time - audio_transcriptions.end_time) < 0.05
+                    ORDER BY dr.created_at DESC, ds.id DESC
+                    LIMIT 1
+                ) AS diarization_mode,
+                (
+                    SELECT ds.provider_speaker_label
+                    FROM diarization_segments ds
+                    JOIN diarization_runs dr ON dr.id = ds.diarization_run_id
+                    WHERE ds.audio_chunk_id = audio_transcriptions.audio_chunk_id
+                      AND audio_transcriptions.start_time IS NOT NULL
+                      AND audio_transcriptions.end_time IS NOT NULL
+                      AND ABS(ds.start_time - audio_transcriptions.start_time) < 0.05
+                      AND ABS(ds.end_time - audio_transcriptions.end_time) < 0.05
+                    ORDER BY dr.created_at DESC, ds.id DESC
+                    LIMIT 1
+                ) AS diarization_speaker_label,
+                (
+                    SELECT dr.provider
+                    FROM diarization_segments ds
+                    JOIN diarization_runs dr ON dr.id = ds.diarization_run_id
+                    WHERE ds.audio_chunk_id = audio_transcriptions.audio_chunk_id
+                      AND audio_transcriptions.start_time IS NOT NULL
+                      AND audio_transcriptions.end_time IS NOT NULL
+                      AND ABS(ds.start_time - audio_transcriptions.start_time) < 0.05
+                      AND ABS(ds.end_time - audio_transcriptions.end_time) < 0.05
+                    ORDER BY dr.created_at DESC, ds.id DESC
+                    LIMIT 1
+                ) AS diarization_provider,
+                (
+                    SELECT ds.source
+                    FROM diarization_segments ds
+                    JOIN diarization_runs dr ON dr.id = ds.diarization_run_id
+                    WHERE ds.audio_chunk_id = audio_transcriptions.audio_chunk_id
+                      AND audio_transcriptions.start_time IS NOT NULL
+                      AND audio_transcriptions.end_time IS NOT NULL
+                      AND ABS(ds.start_time - audio_transcriptions.start_time) < 0.05
+                      AND ABS(ds.end_time - audio_transcriptions.end_time) < 0.05
+                    ORDER BY dr.created_at DESC, ds.id DESC
+                    LIMIT 1
+                ) AS diarization_source,
+                (
+                    SELECT ds.confidence
+                    FROM diarization_segments ds
+                    JOIN diarization_runs dr ON dr.id = ds.diarization_run_id
+                    WHERE ds.audio_chunk_id = audio_transcriptions.audio_chunk_id
+                      AND audio_transcriptions.start_time IS NOT NULL
+                      AND audio_transcriptions.end_time IS NOT NULL
+                      AND ABS(ds.start_time - audio_transcriptions.start_time) < 0.05
+                      AND ABS(ds.end_time - audio_transcriptions.end_time) < 0.05
+                    ORDER BY dr.created_at DESC, ds.id DESC
+                    LIMIT 1
+                ) AS diarization_confidence
              FROM audio_transcriptions
              JOIN audio_chunks ON audio_transcriptions.audio_chunk_id = audio_chunks.id
              LEFT JOIN speakers ON audio_transcriptions.speaker_id = speakers.id
@@ -3432,7 +3635,19 @@ impl DatabaseManager {
             conditions.push("(json_array_length(?) = 0 OR audio_transcriptions.speaker_id IN (SELECT value FROM json_each(?)))");
         }
         if speaker_name.is_some() {
-            conditions.push("speakers.name LIKE '%' || ? || '%' COLLATE NOCASE");
+            conditions.push(
+                "(speakers.name LIKE '%' || ? || '%' COLLATE NOCASE
+                  OR EXISTS (
+                    SELECT 1
+                    FROM diarization_segments ds_name
+                    WHERE ds_name.audio_chunk_id = audio_transcriptions.audio_chunk_id
+                      AND audio_transcriptions.start_time IS NOT NULL
+                      AND audio_transcriptions.end_time IS NOT NULL
+                      AND ABS(ds_name.start_time - audio_transcriptions.start_time) < 0.05
+                      AND ABS(ds_name.end_time - audio_transcriptions.end_time) < 0.05
+                      AND ds_name.provider_speaker_label LIKE '%' || ? || '%' COLLATE NOCASE
+                  ))",
+            );
         }
         if device_name.is_some() {
             conditions.push("audio_transcriptions.device LIKE '%' || ? || '%'");
@@ -3483,7 +3698,7 @@ impl DatabaseManager {
                 .bind(&speaker_ids_json);
         }
         if let Some(name) = speaker_name {
-            query_builder = query_builder.bind(name);
+            query_builder = query_builder.bind(name).bind(name);
         }
         if let Some(dev) = device_name {
             query_builder = query_builder.bind(dev);
@@ -3504,6 +3719,22 @@ impl DatabaseManager {
                     Some(id) => (self.get_speaker_by_id(id).await).ok(),
                     None => None,
                 };
+                let speaker_label = speaker
+                    .as_ref()
+                    .and_then(|speaker| {
+                        let name = speaker.name.trim();
+                        (!name.is_empty()).then(|| name.to_string())
+                    })
+                    .or_else(|| raw.diarization_speaker_label.clone());
+                let speaker_provisional =
+                    speaker.is_none() && raw.diarization_speaker_label.is_some();
+                let speaker_source = if speaker.is_some() {
+                    Some("speaker_id".to_string())
+                } else {
+                    raw.diarization_source
+                        .clone()
+                        .or_else(|| raw.diarization_provider.clone())
+                };
 
                 Ok::<AudioResult, sqlx::Error>(AudioResult {
                     audio_chunk_id: raw.audio_chunk_id,
@@ -3523,9 +3754,16 @@ impl DatabaseManager {
                         DeviceType::Output
                     },
                     speaker,
+                    speaker_label,
+                    speaker_source,
+                    speaker_confidence: raw.diarization_confidence,
+                    speaker_provisional,
                     start_time: raw.start_time,
                     end_time: raw.end_time,
-                    source: Some("background".to_string()),
+                    source: Some(
+                        raw.diarization_mode
+                            .unwrap_or_else(|| "background".to_string()),
+                    ),
                     meeting_id: None,
                     provider: None,
                     model: Some(transcription_engine),
@@ -3565,6 +3803,7 @@ impl DatabaseManager {
             model: Option<String>,
             device_name: String,
             device_type: String,
+            speaker_name: Option<String>,
         }
 
         let rows = sqlx::query_as::<_, LiveAudioResultRaw>(
@@ -3577,7 +3816,8 @@ impl DatabaseManager {
                 provider,
                 model,
                 device_name,
-                device_type
+                device_type,
+                speaker_name
             FROM meeting_transcript_segments
             WHERE (?1 = '' OR transcript LIKE '%' || ?1 || '%' COLLATE NOCASE)
               AND (?2 IS NULL OR julianday(captured_at) >= julianday(?2))
@@ -3610,6 +3850,11 @@ impl DatabaseManager {
                     .unwrap_or_else(|_| Utc::now());
                 let transcription_engine =
                     raw.model.clone().unwrap_or_else(|| raw.provider.clone());
+                let speaker_label = raw
+                    .speaker_name
+                    .as_ref()
+                    .and_then(|name| (!name.trim().is_empty()).then(|| name.clone()));
+                let speaker_provisional = speaker_label.is_some();
                 AudioResult {
                     audio_chunk_id: -raw.id,
                     transcription: raw.transcription,
@@ -3625,6 +3870,10 @@ impl DatabaseManager {
                         DeviceType::Input
                     },
                     speaker: None,
+                    speaker_label,
+                    speaker_source: speaker_provisional.then(|| "live".to_string()),
+                    speaker_confidence: None,
+                    speaker_provisional,
                     start_time: None,
                     end_time: None,
                     source: Some("live".to_string()),
@@ -8208,13 +8457,6 @@ LIMIT ? OFFSET ?
                 FROM meetings
                 WHERE id = ?1
             ),
-            live_bounds AS (
-                SELECT
-                    MIN(julianday(captured_at)) AS first_live_at_jd,
-                    MAX(julianday(captured_at)) AS last_live_at_jd
-                FROM meeting_transcript_segments
-                WHERE meeting_id = ?1
-            ),
             live_segments AS (
                 SELECT
                     id,
@@ -8261,17 +8503,11 @@ LIMIT ? OFFSET ?
                 JOIN audio_chunks ac ON ac.id = at.audio_chunk_id
                 JOIN meeting_window mw ON 1 = 1
                 LEFT JOIN speakers s ON s.id = at.speaker_id
-                CROSS JOIN live_bounds lb
                 WHERE julianday(at.timestamp) >= julianday(mw.meeting_start)
                   AND julianday(at.timestamp) <= julianday(mw.meeting_end)
                   AND TRIM(at.transcription) != ''
                   AND ac.file_path NOT LIKE 'cloud://%'
                   AND (s.id IS NULL OR s.hallucination = 0)
-                  AND NOT (
-                      lb.first_live_at_jd IS NOT NULL
-                      AND julianday(at.timestamp) >= lb.first_live_at_jd - (60.0 / 86400.0)
-                      AND julianday(at.timestamp) <= lb.last_live_at_jd + (60.0 / 86400.0)
-                  )
             )
             SELECT * FROM (
                 SELECT * FROM live_segments

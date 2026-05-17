@@ -6,6 +6,7 @@ use screenpipe_audio::audio_manager::builder::TranscriptionMode;
 use screenpipe_audio::audio_manager::AudioManagerBuilder;
 use screenpipe_audio::core::engine::AudioTranscriptionEngine;
 use screenpipe_audio::meeting_streaming::MeetingStreamingConfig;
+use screenpipe_audio::transcription::deepgram::DeepgramTranscriptionConfig;
 use screenpipe_audio::transcription::VocabularyEntry;
 use screenpipe_audio::vad::VadEngineEnum;
 use screenpipe_config::{ChannelConfig, DbConfig};
@@ -58,6 +59,8 @@ pub struct RecordingConfig {
     pub use_system_default_audio: bool,
     /// Experimental: use CoreAudio Process Tap for System Audio on macOS 14.4+.
     pub experimental_coreaudio_system_audio: bool,
+    /// Experimental: request Windows WASAPI microphone AEC when supported.
+    pub windows_input_aec_enabled: bool,
     pub monitor_ids: Vec<String>,
     pub use_all_monitors: bool,
 
@@ -78,6 +81,7 @@ pub struct RecordingConfig {
 
     // Cloud/auth
     pub deepgram_api_key: Option<String>,
+    pub deepgram_config: Option<DeepgramTranscriptionConfig>,
     pub user_id: Option<String>,
 
     // OpenAI Compatible transcription
@@ -217,6 +221,7 @@ impl RecordingConfig {
             audio_devices: settings.audio_devices.clone(),
             use_system_default_audio: settings.use_system_default_audio,
             experimental_coreaudio_system_audio: settings.experimental_coreaudio_system_audio,
+            windows_input_aec_enabled: settings.windows_input_aec_enabled,
             monitor_ids: settings.monitor_ids.clone(),
             use_all_monitors: settings.use_all_monitors,
             ignored_windows: settings.ignored_windows.clone(),
@@ -232,6 +237,15 @@ impl RecordingConfig {
                 .filter_map(|s| s.parse().ok())
                 .collect(),
             deepgram_api_key: settings.effective_deepgram_key().map(|s| s.to_string()),
+            deepgram_config: match engine_str {
+                "screenpipe-cloud" => settings
+                    .effective_user_id()
+                    .map(|s| DeepgramTranscriptionConfig::screenpipe_cloud(s.to_string())),
+                "deepgram" => settings
+                    .effective_deepgram_key()
+                    .map(|s| DeepgramTranscriptionConfig::direct(s.to_string())),
+                _ => None,
+            },
             user_id: settings.effective_user_id().map(|s| s.to_string()),
             openai_compatible_endpoint: settings.openai_compatible_endpoint.clone(),
             openai_compatible_api_key: settings.openai_compatible_api_key.clone(),
@@ -319,7 +333,8 @@ impl RecordingConfig {
             .enabled_devices(audio_devices)
             .use_system_default_audio(self.use_system_default_audio)
             .experimental_coreaudio_system_audio(self.experimental_coreaudio_system_audio)
-            .deepgram_api_key(self.deepgram_api_key.clone())
+            .windows_input_aec_enabled(self.windows_input_aec_enabled)
+            .deepgram_config(self.deepgram_config.clone())
             .output_path(output_path)
             .use_pii_removal(self.use_pii_removal)
             .filter_music(self.filter_music)
