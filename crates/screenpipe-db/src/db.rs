@@ -5208,7 +5208,7 @@ impl DatabaseManager {
                 COALESCE(f.app_name, '') as app_name,
                 COALESCE(f.window_name, '') as window_name,
                 NULL as initial_traversal_at,
-                COALESCE(vc.file_path, '') as file_path,
+                COALESCE(f.snapshot_path, vc.file_path, '') as file_path,
                 COALESCE(f.offset_index, 0) as offset_index,
                 f.name as frame_name,
                 f.browser_url
@@ -5292,7 +5292,7 @@ impl DatabaseManager {
                 COALESCE(f.app_name, '') as app_name,
                 COALESCE(f.window_name, '') as window_name,
                 NULL as initial_traversal_at,
-                COALESCE(vc.file_path, '') as file_path,
+                COALESCE(f.snapshot_path, vc.file_path, '') as file_path,
                 COALESCE(f.offset_index, 0) as offset_index,
                 f.name as frame_name,
                 f.browser_url

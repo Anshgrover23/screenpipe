@@ -630,6 +630,7 @@ interface SearchOcrItem {
     timestamp?: string;
     app_name?: string;
     window_name?: string;
+    file_path?: string;
   };
 }
 
@@ -846,17 +847,26 @@ export async function fetchFrameSamples(
   endIso: string,
   limit = 500,
 ): Promise<FrameSample[]> {
+  const pageSize = Math.min(limit, 200);
+  const maxPages = Math.max(1, Math.ceil(limit / pageSize));
   const fetchOne = async (contentType: "ocr" | "accessibility") => {
+    const out: SearchOcrItem[] = [];
     try {
-      const res = await localFetch(
-        `/search?content_type=${contentType}&start_time=${encodeURIComponent(startIso)}&end_time=${encodeURIComponent(endIso)}&limit=${limit}`,
-      );
-      if (!res.ok) return [] as SearchOcrItem[];
-      const body = (await res.json()) as { data?: SearchOcrItem[] };
-      return body.data ?? [];
+      for (let page = 0; page < maxPages && out.length < limit; page++) {
+        const offset = page * pageSize;
+        const res = await localFetch(
+          `/search?content_type=${contentType}&start_time=${encodeURIComponent(startIso)}&end_time=${encodeURIComponent(endIso)}&limit=${pageSize}&offset=${offset}`,
+        );
+        if (!res.ok) break;
+        const body = (await res.json()) as { data?: SearchOcrItem[] };
+        const items = body.data ?? [];
+        out.push(...items);
+        if (items.length < pageSize) break;
+      }
     } catch {
-      return [] as SearchOcrItem[];
+      return out;
     }
+    return out;
   };
 
   const [ocrItems, uiItems] = await Promise.all([
@@ -869,6 +879,8 @@ export async function fetchFrameSamples(
   for (const item of [...ocrItems, ...uiItems]) {
     const fid = frameIdFromItem(item);
     const ts = item.content?.timestamp;
+    const filePath = item.content?.file_path?.trim();
+    if (!filePath || filePath.startsWith("cloud://")) continue;
     if (fid == null || !ts || seen.has(fid)) continue;
     seen.add(fid);
     out.push({ frameId: fid, timestamp: ts });
