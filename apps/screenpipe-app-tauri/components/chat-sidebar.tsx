@@ -404,7 +404,10 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
     //      the page-level chat-load-conversation listener flip the
     //      view; standalone-chat skips the snapshot+swap when the id
     //      already matches its piSessionIdRef so there's no flicker.
-    actions.setCurrent(id);
+    const store = useChatStore.getState();
+    const activeTabId =
+      store.currentId ?? store.panelSessionId ?? store.openTabIds.at(-1) ?? null;
+    actions.replaceChatTab(activeTabId, id);
     emit("chat-load-conversation", { conversationId: id });
   };
 

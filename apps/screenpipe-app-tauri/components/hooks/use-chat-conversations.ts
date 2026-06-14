@@ -124,6 +124,10 @@ interface SaveConversationOptions {
   syncActiveConversation?: boolean;
 }
 
+interface StartNewConversationOptions {
+  forceNewEmpty?: boolean;
+}
+
 function newestUserMessageTimestamp(messages: Message[]): number | undefined {
   let latest: number | undefined;
   for (const message of messages) {
@@ -131,6 +135,50 @@ function newestUserMessageTimestamp(messages: Message[]): number | undefined {
     if (latest == null || message.timestamp > latest) latest = message.timestamp;
   }
   return latest;
+}
+
+function isEmptyComposerDraft(draft?: {
+  input?: string;
+  pastedImages?: unknown[];
+  attachedDocs?: unknown[];
+  pendingDocs?: unknown[];
+}): boolean {
+  if (!draft) return true;
+  return (
+    !draft.input?.trim() &&
+    (draft.pastedImages?.length ?? 0) === 0 &&
+    (draft.attachedDocs?.length ?? 0) === 0 &&
+    (draft.pendingDocs?.length ?? 0) === 0
+  );
+}
+
+function isReusableEmptySessionDraft(session?: {
+  draft?: boolean;
+  messageCount?: number;
+  messages?: unknown[];
+  composerDraft?: {
+    input?: string;
+    pastedImages?: unknown[];
+    attachedDocs?: unknown[];
+    pendingDocs?: unknown[];
+  };
+  isLoading?: boolean;
+  isStreaming?: boolean;
+  streamingText?: string;
+  streamingMessageId?: string | null;
+  contentBlocks?: unknown[];
+}): boolean {
+  return Boolean(
+    session?.draft &&
+      (session.messageCount ?? 0) === 0 &&
+      (session.messages?.length ?? 0) === 0 &&
+      !session.isLoading &&
+      !session.isStreaming &&
+      !session.streamingText &&
+      !session.streamingMessageId &&
+      (session.contentBlocks?.length ?? 0) === 0 &&
+      isEmptyComposerDraft(session.composerDraft),
+  );
 }
 
 /** Module-scope guard for AI title generation — survives component remounts
@@ -1421,7 +1469,10 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
   // chat agree from message 0). Passing one avoids the
   // generate-then-overwrite dance which left store.currentId pointing
   // at the throwaway uuid.
-  const startNewConversation = async (explicitId?: string) => {
+  const startNewConversation = async (
+    explicitId?: string,
+    options: StartNewConversationOptions = {},
+  ) => {
     // Snapshot OUTGOING session into the store so the previous chat's
     // in-flight state survives the switch to "new chat". Without this,
     // hitting "+ new chat" in the middle of a stream would silently
@@ -1430,6 +1481,57 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     const { useChatStore } = await import("@/lib/stores/chat-store");
     const store = useChatStore.getState();
     const outgoingSid = piSessionIdRef.current;
+    const localComposerEmpty =
+      !(inputValueRef?.current ?? "").trim() &&
+      (pastedImagesRef?.current.length ?? 0) === 0 &&
+      (attachedDocsRef?.current.length ?? 0) === 0 &&
+      (pendingDocsRef?.current.length ?? 0) === 0;
+    const localConversationEmpty =
+      messages.length === 0 &&
+      localComposerEmpty &&
+      !isLoading &&
+      !isStreaming &&
+      !piStreamingTextRef.current &&
+      !piMessageIdRef.current &&
+      piContentBlocksRef.current.length === 0;
+
+    if (
+      outgoingSid &&
+      explicitId &&
+      explicitId !== outgoingSid &&
+      localConversationEmpty &&
+      !options.forceNewEmpty
+    ) {
+      const outgoingSession = store.sessions[outgoingSid];
+      if (isReusableEmptySessionDraft(outgoingSession)) {
+        store.actions.drop(outgoingSid);
+      }
+      piSessionIdRef.current = explicitId;
+      piSessionSyncedRef.current = true;
+      setConversationId(explicitId);
+      store.actions.setCurrent(explicitId);
+      store.actions.setPanelSession(explicitId);
+      setShowHistory(false);
+      try {
+        await emit("chat-current-session", { id: explicitId });
+      } catch {
+        // best-effort sidebar sync
+      }
+      return;
+    }
+
+    if (outgoingSid && localConversationEmpty && !options.forceNewEmpty) {
+      store.actions.setCurrent(outgoingSid);
+      store.actions.setPanelSession(outgoingSid);
+      setShowHistory(false);
+      try {
+        await emit("chat-current-session", { id: outgoingSid });
+      } catch {
+        // best-effort sidebar sync
+      }
+      return;
+    }
+
     if (outgoingSid && store.sessions[outgoingSid]) {
       store.actions.snapshotSession(outgoingSid, {
         messages: messages as any,

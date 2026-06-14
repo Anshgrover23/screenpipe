@@ -23,6 +23,7 @@ import { emit } from "@tauri-apps/api/event";
 import {
   sessionRecordFromMeta,
   useChatStore,
+  type SessionRecord,
   type SessionStatus,
 } from "@/lib/stores/chat-store";
 import {
@@ -96,6 +97,24 @@ const SETTINGS_SECTIONS = new Set<string>([
   "disk-usage", "cloud-archive", "cloud-sync", // backwards compat → maps to "storage"
 ]);
 
+function isEmptyDraftSession(session: SessionRecord | undefined): boolean {
+  const draft = session?.composerDraft;
+  return Boolean(
+    session &&
+      (session.messageCount ?? 0) === 0 &&
+      (session.messages?.length ?? 0) === 0 &&
+      !session.isLoading &&
+      !session.isStreaming &&
+      !session.streamingText &&
+      !session.streamingMessageId &&
+      (session.contentBlocks?.length ?? 0) === 0 &&
+      !draft?.input?.trim() &&
+      (draft?.pastedImages?.length ?? 0) === 0 &&
+      (draft?.attachedDocs?.length ?? 0) === 0 &&
+      (draft?.pendingDocs?.length ?? 0) === 0,
+  );
+}
+
 function HomeContent() {
   const router = useRouter();
   const { isMac } = usePlatform();
@@ -125,16 +144,28 @@ function HomeContent() {
   const runningPipeCount = runningPipes.length;
   const selectChatConversation = useCallback((id: string) => {
     setActiveSection("home");
-    useChatStore.getState().actions.setCurrent(id);
+    const store = useChatStore.getState();
+    const activeTabId =
+      store.currentId ?? store.panelSessionId ?? store.openTabIds.at(-1) ?? null;
+    store.actions.replaceChatTab(activeTabId, id);
     void emit("chat-load-conversation", { conversationId: id });
   }, [setActiveSection]);
 
   const startNewChat = useCallback(() => {
-    const id = crypto.randomUUID();
     const store = useChatStore.getState();
-    Object.values(store.sessions).forEach((s) => {
-      if (s.draft) store.actions.drop(s.id);
-    });
+    const activeTabId =
+      store.currentId ?? store.panelSessionId ?? store.openTabIds.at(-1) ?? null;
+
+    if (activeTabId) {
+      const activeSession = store.sessions[activeTabId];
+      if (!activeSession || isEmptyDraftSession(activeSession)) {
+        store.actions.replaceChatTab(activeTabId, activeTabId);
+        void emit("chat-load-conversation", { conversationId: activeTabId });
+        return;
+      }
+    }
+
+    const id = crypto.randomUUID();
     store.actions.upsert({
       id,
       title: "untitled",
@@ -147,9 +178,9 @@ function HomeContent() {
       unread: false,
       draft: true,
     });
-    store.actions.setCurrent(id);
+    store.actions.replaceChatTab(activeTabId, id);
     void emit("chat-load-conversation", { conversationId: id });
-  }, [setActiveSection]);
+  }, []);
 
   // Redirect settings sections to the standalone settings page
   useEffect(() => {
@@ -897,8 +928,12 @@ function HomeContent() {
     <div className={cn("bg-transparent", isFullHeight ? "h-screen overflow-hidden" : "min-h-screen")} data-testid="home-page">
       {/* Enterprise license key prompt */}
       {needsLicenseKey && <EnterpriseLicensePrompt onSubmit={submitLicenseKey} />}
-      {/* Drag region — always absolute so it works with full-bleed translucent layout */}
-      <div className="absolute top-0 left-0 right-0 h-8 z-10" data-tauri-drag-region />
+      {/* Non-chat sections keep a thin drag strip. Home uses ChatTabStrip as
+          its drag surface so tab hit targets are not covered by an invisible
+          top overlay. */}
+      {activeSection !== "home" && (
+        <div className="absolute top-0 left-0 right-0 h-8 z-10" data-tauri-drag-region />
+      )}
 
       <div className="h-screen flex min-h-0">
           {/* Sidebar */}
@@ -1004,8 +1039,8 @@ function HomeContent() {
                       onClick={() => {
                         setActiveSection(section.id);
                         // The "home" slot is the New Chat affordance —
-                        // clicking it (from any view) always spawns a
-                        // new chat session and switches to it.
+                        // clicking it replaces the active tab with a new
+                        // empty chat, matching Littlebird/sidebar semantics.
                         if (section.id === "home") {
                           startNewChat();
                         }

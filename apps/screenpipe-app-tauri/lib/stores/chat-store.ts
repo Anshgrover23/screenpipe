@@ -181,6 +181,11 @@ interface ChatStoreState {
   sessions: Record<string, SessionRecord>;
   /** True once the initial `~/.screenpipe/chats` scan has finished. */
   diskHydrated: boolean;
+  /** Ephemeral working set rendered as chat tabs in the current window.
+   *  Session records may not exist yet for brand-new draft chats; keep ids
+   *  here so the tab appears immediately and resolves once the first message
+   *  creates the row. */
+  openTabIds: string[];
   /** Currently FOCUSED session — i.e. the chat the user is actively
    *  looking at. Cleared when the user navigates away from the chat
    *  view (Pipes/Memories/...) so the sidebar row stops being
@@ -208,6 +213,16 @@ interface ChatStoreActions {
   /** Mark a session as currently in front. Implicitly clears its unread
    *  flag — viewing the chat counts as reading it. */
   setCurrent: (id: string | null) => void;
+  /** Add a session to the top chat working set without switching to it. */
+  openChatTab: (id: string) => void;
+  /** Replace one top-tab slot with another session id. Used by the sidebar
+   *  New Chat affordance, which should reuse the current tab instead of
+   *  appending a browser-style tab. */
+  replaceChatTab: (oldId: string | null | undefined, newId: string) => void;
+  /** Remove a session from the top chat working set. This does not delete,
+   *  archive, stop streaming, or remove it from recents. Returns the adjacent
+   *  fallback id when the closed tab was active. */
+  closeChatTab: (id: string) => string | null;
   /** Mirror of the panel's piSessionIdRef.current. Survives section
    *  switches; used to re-highlight the sidebar row when the user
    *  navigates back to home. */
@@ -292,10 +307,34 @@ interface ChatStoreActions {
 
 export type ChatStore = ChatStoreState & { actions: ChatStoreActions };
 type ChatSessionsState = Pick<ChatStoreState, "sessions">;
+type ChatTabsState = Pick<ChatStoreState, "sessions" | "openTabIds" | "currentId" | "panelSessionId">;
+
+function withOpenTabId(openTabIds: string[], id: string | null): string[] {
+  if (!id || openTabIds.includes(id)) return openTabIds;
+  return [...openTabIds, id];
+}
+
+function sessionHasUserMessage(session?: SessionRecord): boolean {
+  const messages = (session?.messages as Array<{ role?: string }> | undefined) ?? [];
+  return messages.some((message) => message?.role === "user");
+}
+
+function isReusableEmptyChatSession(session?: SessionRecord): boolean {
+  if (!session) return false;
+  return (
+    !sessionHasUserMessage(session) &&
+    !session.isLoading &&
+    !session.isStreaming &&
+    !session.streamingText &&
+    !session.streamingMessageId &&
+    (session.contentBlocks?.length ?? 0) === 0
+  );
+}
 
 export const useChatStore = create<ChatStore>((set) => ({
   sessions: {},
   diskHydrated: false,
+  openTabIds: [],
   currentId: null,
   panelSessionId: null,
   actions: {
@@ -357,12 +396,14 @@ export const useChatStore = create<ChatStore>((set) => ({
         return {
           sessions: next,
           currentId: s.currentId === id ? null : s.currentId,
+          openTabIds: s.openTabIds.filter((tabId) => tabId !== id),
         };
       }),
 
     setCurrent: (id) =>
       set((s) => {
         const viewedAt = Date.now();
+        const openTabIds = withOpenTabId(s.openTabIds, id);
         // Viewing a session counts as reading it — clear the unread flag
         // for the new current. Same atomic update so the row's unread
         // state can't transiently flicker between the setCurrent call and
@@ -370,14 +411,77 @@ export const useChatStore = create<ChatStore>((set) => ({
         if (id && s.sessions[id]) {
           return {
             currentId: id,
+            openTabIds,
             sessions: {
               ...s.sessions,
               [id]: { ...s.sessions[id], unread: false, lastViewedAt: viewedAt },
             },
           };
         }
-        return { currentId: id };
+        return { currentId: id, openTabIds };
       }),
+
+    openChatTab: (id) =>
+      set((s) => ({ openTabIds: withOpenTabId(s.openTabIds, id) })),
+
+    replaceChatTab: (oldId, newId) =>
+      set((s) => {
+        const viewedAt = Date.now();
+        let replaced = false;
+        const openTabIds = s.openTabIds.reduce<string[]>((acc, tabId) => {
+          const nextId = oldId && tabId === oldId ? newId : tabId;
+          if (nextId === newId && oldId && tabId === oldId) replaced = true;
+          if (!acc.includes(nextId)) acc.push(nextId);
+          return acc;
+        }, []);
+        const nextOpenTabIds = replaced ? openTabIds : withOpenTabId(openTabIds, newId);
+        const nextSession = s.sessions[newId];
+        const sessions = nextSession
+          ? {
+              ...s.sessions,
+              [newId]: { ...nextSession, unread: false, lastViewedAt: viewedAt },
+            }
+          : s.sessions;
+        return {
+          openTabIds: nextOpenTabIds,
+          currentId: newId,
+          panelSessionId: newId,
+          sessions,
+        };
+      }),
+
+    closeChatTab: (id) => {
+      let fallbackId: string | null = null;
+      set((s) => {
+        const closingIndex = s.openTabIds.indexOf(id);
+        if (closingIndex === -1) return {};
+        const nextIds = s.openTabIds.filter((tabId) => tabId !== id);
+        const activeId = s.currentId ?? s.panelSessionId;
+        if (activeId === id) {
+          fallbackId = nextIds[Math.max(0, closingIndex - 1)] ?? nextIds[0] ?? null;
+          const fallbackSession = fallbackId ? s.sessions[fallbackId] : undefined;
+          const sessions =
+            fallbackId && fallbackSession
+              ? {
+                  ...s.sessions,
+                  [fallbackId]: {
+                    ...fallbackSession,
+                    unread: false,
+                    lastViewedAt: Date.now(),
+                  },
+                }
+              : s.sessions;
+          return {
+            openTabIds: nextIds,
+            currentId: fallbackId,
+            panelSessionId: fallbackId,
+            sessions,
+          };
+        }
+        return { openTabIds: nextIds };
+      });
+      return fallbackId;
+    },
 
     setPanelSession: (id) => set({ panelSessionId: id }),
 
@@ -661,22 +765,26 @@ export function sessionRecordFromMeta(m: ConversationMeta): SessionRecord {
  */
 export function getOrCreateEmptyChatId(): { id: string; isNew: boolean } {
   const state = useChatStore.getState();
-  const isEmpty = (s: SessionRecord) => {
-    const msgs = (s.messages as Array<{ role?: string }> | undefined) ?? [];
-    if (msgs.length === 0) return true;
-    return !msgs.some((m) => m?.role === "user");
+  const reusableExistingId = (id: string | null | undefined) => {
+    if (!id) return null;
+    const session = state.sessions[id];
+    return !session || isReusableEmptyChatSession(session) ? id : null;
   };
 
-  // Prefer the chat the user is already on.
-  const panelId = state.panelSessionId;
-  if (panelId) {
-    const panel = state.sessions[panelId];
-    if (panel && isEmpty(panel)) return { id: panelId, isNew: false };
-  }
+  // Prefer the chat the user is already on. Brand-new tabs may exist only
+  // as current/panel ids before the first send creates a SessionRecord.
+  const currentId = reusableExistingId(state.currentId);
+  if (currentId) return { id: currentId, isNew: false };
+
+  const panelId = reusableExistingId(state.panelSessionId);
+  if (panelId) return { id: panelId, isNew: false };
+
+  const openEmptyId = state.openTabIds.find((id) => reusableExistingId(id));
+  if (openEmptyId) return { id: openEmptyId, isNew: false };
 
   // Otherwise any other empty session, newest first by createdAt.
   const empties = Object.values(state.sessions)
-    .filter(isEmpty)
+    .filter(isReusableEmptyChatSession)
     .sort((a, b) => b.createdAt - a.createdAt);
   if (empties.length > 0) return { id: empties[0].id, isNew: false };
 
@@ -843,6 +951,18 @@ export function selectRecentSwitcherSessions(state: ChatSessionsState): SessionR
     .sort((a, b) => (b.lastViewedAt ?? 0) - (a.lastViewedAt ?? 0));
 }
 
+export function selectOpenChatTabIds(state: ChatTabsState): string[] {
+  const ids: string[] = [];
+  for (const id of state.openTabIds) {
+    if (!ids.includes(id)) ids.push(id);
+  }
+
+  const activeId = state.currentId ?? state.panelSessionId;
+  if (activeId && !ids.includes(activeId)) ids.push(activeId);
+
+  return ids.filter((id) => !state.sessions[id]?.hidden);
+}
+
 /**
  * Stable hook returning the ordered session list. Subscribes to the raw
  * `sessions` map (referentially stable across no-op updates) and memoizes
@@ -855,5 +975,22 @@ export function useOrderedSessions(): SessionRecord[] {
   return useMemo(
     () => selectOrderedSessions({ sessions: sessionsMap }),
     [sessionsMap],
+  );
+}
+
+export function useOpenChatTabIds(): string[] {
+  const sessionsMap = useChatStore((s) => s.sessions);
+  const openTabIds = useChatStore((s) => s.openTabIds);
+  const currentId = useChatStore((s) => s.currentId);
+  const panelSessionId = useChatStore((s) => s.panelSessionId);
+  return useMemo(
+    () =>
+      selectOpenChatTabIds({
+        sessions: sessionsMap,
+        openTabIds,
+        currentId,
+        panelSessionId,
+      }),
+    [sessionsMap, openTabIds, currentId, panelSessionId],
   );
 }

@@ -13,13 +13,19 @@ import {
   useChatStore,
   selectOrderedSessions,
   selectRecentSwitcherSessions,
+  selectOpenChatTabIds,
   getOrCreateEmptyChatId,
   dedupeSessionRecords,
   type SessionRecord,
 } from "../stores/chat-store";
 
 function reset() {
-  useChatStore.setState({ sessions: {}, currentId: null });
+  useChatStore.setState({
+    sessions: {},
+    currentId: null,
+    panelSessionId: null,
+    openTabIds: [],
+  });
 }
 
 function baseRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
@@ -221,6 +227,30 @@ describe("chat-store: getOrCreateEmptyChatId (no spam on +new)", () => {
     expect(isNew).toBe(false);
   });
 
+  it("reuses the current empty tab even before a session record exists", () => {
+    useChatStore.setState({
+      sessions: {},
+      currentId: "draft-tab",
+      panelSessionId: "draft-tab",
+      openTabIds: ["draft-tab"],
+    });
+    const { id, isNew } = getOrCreateEmptyChatId();
+    expect(id).toBe("draft-tab");
+    expect(isNew).toBe(false);
+  });
+
+  it("reuses an open empty tab even when current ids were cleared", () => {
+    useChatStore.setState({
+      sessions: {},
+      currentId: null,
+      panelSessionId: null,
+      openTabIds: ["draft-tab"],
+    });
+    const { id, isNew } = getOrCreateEmptyChatId();
+    expect(id).toBe("draft-tab");
+    expect(isNew).toBe(false);
+  });
+
   it("creates a new id when the panel chat already has a user message", () => {
     useChatStore.setState({
       sessions: {
@@ -254,6 +284,24 @@ describe("chat-store: getOrCreateEmptyChatId (no spam on +new)", () => {
     const { id, isNew } = getOrCreateEmptyChatId();
     expect(id).toBe("newEmpty");
     expect(isNew).toBe(false);
+  });
+
+  it("does not reuse an in-flight empty chat", () => {
+    useChatStore.setState({
+      sessions: {
+        loading: baseRecord({
+          id: "loading",
+          messages: [],
+          isLoading: true,
+        }),
+      },
+      currentId: "loading",
+      panelSessionId: "loading",
+      openTabIds: ["loading"],
+    });
+    const { id, isNew } = getOrCreateEmptyChatId();
+    expect(id).not.toBe("loading");
+    expect(isNew).toBe(true);
   });
 });
 
@@ -320,6 +368,73 @@ describe("chat-store: recent switcher ordering", () => {
 
     const ordered = selectRecentSwitcherSessions(useChatStore.getState());
     expect(ordered.map((s) => s.id)).toEqual(["visible"]);
+  });
+});
+
+describe("chat-store: open chat tabs", () => {
+  beforeEach(reset);
+
+  it("opens the current session as a tab even before a session record exists", () => {
+    useChatStore.getState().actions.setCurrent("draft-a");
+
+    expect(selectOpenChatTabIds(useChatStore.getState())).toEqual(["draft-a"]);
+
+    useChatStore.getState().actions.upsert(baseRecord({ id: "draft-a" }));
+    useChatStore.getState().actions.setCurrent("draft-a");
+
+    expect(selectOpenChatTabIds(useChatStore.getState())).toEqual(["draft-a"]);
+  });
+
+  it("keeps tab order stable and avoids duplicates", () => {
+    useChatStore.getState().actions.upsert(baseRecord({ id: "A" }));
+    useChatStore.getState().actions.upsert(baseRecord({ id: "B" }));
+
+    useChatStore.getState().actions.setCurrent("A");
+    useChatStore.getState().actions.setCurrent("B");
+    useChatStore.getState().actions.setCurrent("A");
+
+    expect(selectOpenChatTabIds(useChatStore.getState())).toEqual(["A", "B"]);
+  });
+
+  it("replaceChatTab swaps the active tab slot instead of appending", () => {
+    useChatStore.getState().actions.upsert(baseRecord({ id: "A" }));
+    useChatStore.getState().actions.upsert(baseRecord({ id: "B" }));
+    useChatStore.getState().actions.upsert(baseRecord({ id: "draft" }));
+
+    useChatStore.getState().actions.setCurrent("A");
+    useChatStore.getState().actions.setCurrent("B");
+    useChatStore.getState().actions.replaceChatTab("B", "draft");
+
+    expect(selectOpenChatTabIds(useChatStore.getState())).toEqual(["A", "draft"]);
+    expect(useChatStore.getState().currentId).toBe("draft");
+    expect(useChatStore.getState().panelSessionId).toBe("draft");
+  });
+
+  it("closeChatTab only removes the working-set tab and returns an adjacent fallback", () => {
+    useChatStore.getState().actions.upsert(baseRecord({ id: "A" }));
+    useChatStore.getState().actions.upsert(baseRecord({ id: "B" }));
+    useChatStore.getState().actions.upsert(baseRecord({ id: "C" }));
+
+    useChatStore.getState().actions.setCurrent("A");
+    useChatStore.getState().actions.setCurrent("B");
+    useChatStore.getState().actions.setCurrent("C");
+
+    const fallback = useChatStore.getState().actions.closeChatTab("C");
+
+    expect(fallback).toBe("B");
+    expect(selectOpenChatTabIds(useChatStore.getState())).toEqual(["A", "B"]);
+    expect(useChatStore.getState().sessions.C).toBeDefined();
+    expect(useChatStore.getState().currentId).toBe("B");
+    expect(useChatStore.getState().panelSessionId).toBe("B");
+  });
+
+  it("drop removes a deleted session from the tab working set", () => {
+    useChatStore.getState().actions.upsert(baseRecord({ id: "A" }));
+    useChatStore.getState().actions.setCurrent("A");
+
+    useChatStore.getState().actions.drop("A");
+
+    expect(selectOpenChatTabIds(useChatStore.getState())).toEqual([]);
   });
 });
 

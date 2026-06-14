@@ -22,6 +22,7 @@ import { Loader2, Send, Square, Settings, ExternalLink, X, ImageIcon, History, S
 import { SchedulePromptDialog } from "@/components/chat/schedule-prompt-dialog";
 import { PipeContextBanner } from "@/components/chat/pipe-context-banner";
 import { SourceCitationFooter } from "@/components/chat/source-citation-footer";
+import { ChatTabStrip } from "@/components/chat/chat-tab-strip";
 import { BrowserSidebar } from "@/components/browser-sidebar";
 import { MarkdownBlock } from "@/components/chat/markdown-block";
 import { toast } from "@/components/ui/use-toast";
@@ -8257,30 +8258,44 @@ export function StandaloneChat({
       }),
     [isPipeSessionChat, messages],
   );
+  const chatChromeInsetClassName = cn(
+    sidebarCollapsed && "!pl-[58px]",
+    sidebarCollapsed && isMac && !isFullscreen && "!pl-[128px]",
+    !className && isMac && !isFullscreen && "!pl-[78px]",
+  );
+  const handleChatChromeDrag = React.useCallback(
+    async (event: React.MouseEvent<HTMLDivElement>) => {
+      if (className) return;
+      if (event.button !== 0) return;
+      try {
+        await getCurrentWindow().startDragging();
+      } catch {
+        // Ignore drag errors
+      }
+    },
+    [className],
+  );
+  const handleNewTabChat = React.useCallback(async () => {
+    piStoppedIntentionallyRef.current = true;
+    await startNewConversation(undefined, { forceNewEmpty: true });
+  }, [startNewConversation]);
 
   return (
     <div ref={dropRootRef} className={cn("flex flex-col bg-background", className ?? "h-screen")} data-testid="section-home">
-      {/* Header - draggable only in standalone mode */}
-      {/* Add left padding on macOS to avoid traffic light overlap (standalone only) */}
+      <ChatTabStrip
+        onNewChat={handleNewTabChat}
+        leftInsetClassName={chatChromeInsetClassName}
+        onRequestWindowDrag={handleChatChromeDrag}
+      />
+
+      {!hideInlineHistory && (
       <div
         className={cn(
-          "relative flex items-center gap-3 px-4 py-3.5 border-b border-border/50 bg-gradient-to-r from-background to-muted/30",
+          "relative flex items-center gap-3 px-4 py-0.5 border-b border-border/50 bg-background",
           !className && "cursor-grab active:cursor-grabbing",
-          (!className || (conversationId && messages.length > 0)) && "py-0.5",
-          sidebarCollapsed && conversationId && messages.length > 0 && "!pl-[58px]",
-          sidebarCollapsed && isMac && !isFullscreen && "!pl-[128px]",
-          !className && isMac && !isFullscreen && "!pl-[78px]"
+          chatChromeInsetClassName,
         )}
-        onMouseDown={async (e) => {
-          if (className) return; // embedded — don't drag
-          if (e.button === 0) {
-            try {
-              await getCurrentWindow().startDragging();
-            } catch {
-              // Ignore drag errors
-            }
-          }
-        }}
+        onMouseDown={handleChatChromeDrag}
       >
         {/* Geometric corner accent - hidden on macOS (traffic lights) and when embedded */}
         {!isMac && !className && (
@@ -8352,6 +8367,7 @@ export function StandaloneChat({
           </>
         )}
       </div>
+      )}
 
       {/* Main content area with optional history sidebar — only used in
           the floating overlay window. Home page hides this entirely
