@@ -12,6 +12,8 @@ pub mod pulse;
 mod run_record_and_transcribe;
 pub mod source_buffer;
 pub mod stream;
+#[cfg(target_os = "windows")]
+pub mod windows_process_loopback;
 use crate::AudioInput;
 use anyhow::Result;
 use dashmap::DashMap;

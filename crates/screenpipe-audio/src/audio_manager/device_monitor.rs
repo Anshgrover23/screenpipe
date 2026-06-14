@@ -356,6 +356,12 @@ pub async fn start_device_monitor(
             .checked_sub(model_refresh_cooldown)
             .unwrap_or(Instant::now());
 
+        // "Follow the audio" per-process loopback state. Only does anything on
+        // Windows — starts a WASAPI process loopback for each app that is
+        // actively rendering audio, so speaker capture follows the meeting app
+        // to whatever endpoint it uses. See `process_follow.rs`.
+        let mut process_follow_state = super::process_follow::FollowState::new();
+
         // Pinned-input fallback state. In manual mode, when a user-selected
         // input device goes missing past the grace window we engage the
         // system default input as a substitute so capture continues. The
@@ -1215,6 +1221,15 @@ pub async fn start_device_monitor(
                     &mut pinned_missing_since,
                     &mut active_pinned_fallback,
                     &mut logged_pinned_fallback_default_disabled,
+                )
+                .await;
+
+                // Follow per-process render audio with WASAPI loopback so the
+                // speaker transcript captures whatever endpoint the meeting app
+                // routes to. Inert outside Windows. See `process_follow.rs`.
+                super::process_follow::run_process_follow_sweep(
+                    &audio_manager,
+                    &mut process_follow_state,
                 )
                 .await;
             }

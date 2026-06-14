@@ -836,6 +836,40 @@ pub fn default_communications_output_device() -> Option<AudioDevice> {
     }
 }
 
+/// One process that currently has an Active render (playback) audio session,
+/// as reported by WASAPI. The device monitor uses these to start per-process
+/// loopback capture — capturing the app's audio regardless of which endpoint
+/// it routes to (see `windows_process_loopback.rs`).
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderSessionInfo {
+    /// Owning process id (the leaf session owner). Loopback should target the
+    /// *root* of this process's tree with `include_tree = true`.
+    pub pid: u32,
+    /// Lower-cased executable name (e.g. `"zoom.exe"`, `"chrome.exe"`) when
+    /// resolvable, else empty. Diagnostic + for friendly device labels.
+    pub process_name: String,
+    /// Friendly name of the render endpoint this process is playing through
+    /// (e.g. `"Speakers (Realtek(R) Audio)"`). Lets the follow logic skip
+    /// processes already covered by an endpoint loopback we run, so the same
+    /// audio is never captured twice.
+    pub endpoint_name: String,
+}
+
+/// Enumerate distinct processes (excluding ours) that hold an Active render
+/// session right now. Fail-open: any COM error returns an empty list, which
+/// callers treat as "no signal", never as "stop capturing".
+#[cfg(target_os = "windows")]
+pub fn list_render_session_pids() -> Vec<RenderSessionInfo> {
+    match unsafe { windows_com_audio::list_render_session_pids() } {
+        Ok(list) => list,
+        Err(e) => {
+            tracing::debug!("failed to query Windows render session pids: {}", e);
+            Vec::new()
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 mod windows_com_audio {
     use anyhow::{anyhow, Result};
@@ -893,6 +927,128 @@ mod windows_com_audio {
         }
 
         Ok(Some(name))
+    }
+
+    /// Enumerate distinct non-self processes that hold an Active render session
+    /// across all active render endpoints. The device monitor turns each into a
+    /// per-process loopback capture. Dedups by PID (one process can hold
+    /// sessions on several endpoints). Per-endpoint/-session errors are skipped.
+    pub unsafe fn list_render_session_pids() -> Result<Vec<super::RenderSessionInfo>> {
+        use std::collections::HashMap;
+        use windows::core::Interface;
+        use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+        use windows::Win32::Media::Audio::{
+            eRender, AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2,
+            IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+        };
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM,
+        };
+        use windows::Win32::System::Threading::GetCurrentProcessId;
+
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let our_pid = GetCurrentProcessId();
+
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+        let collection = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?;
+        let count = collection.GetCount()?;
+
+        // PID → (process name, endpoint friendly name), deduped across endpoints.
+        let mut by_pid: HashMap<u32, (String, String)> = HashMap::new();
+
+        for i in 0..count {
+            let Ok(device) = collection.Item(i) else {
+                continue;
+            };
+            // Endpoint friendly name (matches what cpal/our output devices use).
+            let endpoint_name = device
+                .OpenPropertyStore(STGM(0))
+                .and_then(|store| store.GetValue(&PKEY_Device_FriendlyName))
+                .map(|prop| prop.to_string())
+                .unwrap_or_default();
+            let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else {
+                continue;
+            };
+            let Ok(sessions) = manager.GetSessionEnumerator() else {
+                continue;
+            };
+            let Ok(session_count) = sessions.GetCount() else {
+                continue;
+            };
+            for s in 0..session_count {
+                let Ok(session) = sessions.GetSession(s) else {
+                    continue;
+                };
+                // Only sessions currently rendering audio.
+                if session.GetState().unwrap_or(AudioSessionStateActive) != AudioSessionStateActive
+                {
+                    continue;
+                }
+                let Ok(ctrl2) = session.cast::<IAudioSessionControl2>() else {
+                    continue;
+                };
+                // System-sounds sessions report PID 0 / a special flag — skip.
+                if ctrl2.IsSystemSoundsSession().is_ok() {
+                    continue;
+                }
+                let Ok(pid) = ctrl2.GetProcessId() else {
+                    continue;
+                };
+                if pid == 0 || pid == our_pid {
+                    continue; // never chase our own render (notification sounds)
+                }
+                by_pid
+                    .entry(pid)
+                    .or_insert_with(|| (process_name_for_pid(pid), endpoint_name.clone()));
+            }
+        }
+
+        Ok(by_pid
+            .into_iter()
+            .map(
+                |(pid, (process_name, endpoint_name))| super::RenderSessionInfo {
+                    pid,
+                    process_name,
+                    endpoint_name,
+                },
+            )
+            .collect())
+    }
+
+    /// Best-effort lower-cased executable name for a PID (e.g. `"zoom.exe"`).
+    /// Empty string if the process can't be opened (protected/exited).
+    unsafe fn process_name_for_pid(pid: u32) -> String {
+        use windows::core::PWSTR;
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return String::new();
+        };
+        let mut buf = [0u16; 260];
+        let mut size = buf.len() as u32;
+        let name = if QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(buf.as_mut_ptr()),
+            &mut size,
+        )
+        .is_ok()
+        {
+            String::from_utf16_lossy(&buf[..size as usize])
+                .rsplit(['\\', '/'])
+                .next()
+                .unwrap_or_default()
+                .to_lowercase()
+        } else {
+            String::new()
+        };
+        let _ = CloseHandle(handle);
+        name
     }
 }
 

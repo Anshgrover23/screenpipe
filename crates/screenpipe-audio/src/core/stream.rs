@@ -176,7 +176,60 @@ impl AudioStream {
             #[cfg(not(target_os = "macos"))]
             let use_process_tap = false;
 
-            if use_process_tap {
+            // Windows: a synthetic "App Audio [pid N]" output device is backed
+            // by a WASAPI per-process loopback that follows the app's audio to
+            // whatever endpoint it renders on (see windows_process_loopback.rs).
+            #[cfg(target_os = "windows")]
+            let windows_loopback_pid = {
+                use super::device::DeviceType;
+                if device.device_type == DeviceType::Output {
+                    super::windows_process_loopback::parse_pid_from_device_name(&device.name)
+                } else {
+                    None
+                }
+            };
+            #[cfg(not(target_os = "windows"))]
+            let windows_loopback_pid: Option<u32> = None;
+
+            if let Some(_pid) = windows_loopback_pid {
+                #[cfg(target_os = "windows")]
+                {
+                    match super::windows_process_loopback::spawn_process_loopback_capture(
+                        _pid,
+                        true, // include child processes (browser meetings)
+                        tx.clone(),
+                        is_running.clone(),
+                        is_disconnected.clone(),
+                    ) {
+                        Ok((config, thread)) => {
+                            // No cpal stream-control channel for this backend.
+                            drop(stream_control_rx);
+                            (config, thread)
+                        }
+                        Err(e) => {
+                            warn!(
+                                "process loopback for pid {} failed ({}), falling back to cpal",
+                                _pid, e
+                            );
+                            Self::start_cpal_stream(
+                                &device,
+                                tx,
+                                stream_control_rx,
+                                &is_running,
+                                &is_disconnected,
+                                &stream_control_tx,
+                                windows_input_aec,
+                                macos_input_vpio,
+                            )
+                            .await?
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    unreachable!()
+                }
+            } else if use_process_tap {
                 #[cfg(target_os = "macos")]
                 {
                     match super::process_tap::spawn_process_tap_capture(
