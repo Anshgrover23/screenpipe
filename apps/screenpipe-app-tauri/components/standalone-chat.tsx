@@ -3875,6 +3875,22 @@ export function StandaloneChat({
     useChatStore.getState().actions.setPanelSession(conversationId);
   }, [conversationId]);
 
+  useEffect(() => {
+    if (!conversationId) return;
+    let cancelled = false;
+    commands.piInfo(conversationId)
+      .then((result) => {
+        if (cancelled || result.status !== "ok") return;
+        setPiInfo(result.data);
+      })
+      .catch((e) => {
+        console.warn("[Pi] Failed to refresh status for selected chat:", e);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
   // E2E hook: expose a function to seed a user message into a session.
   // Required by chat-streaming-performance.spec.ts because
   // `ensureAssistantPlaceholder` only creates an assistant bubble when
@@ -6425,6 +6441,20 @@ export function StandaloneChat({
   }
 
   async function enqueuePiMessage(userMessage: string, displayLabel?: string, imageDataUrls?: string[]) {
+    if (piInfo?.running) {
+      try {
+        const currentInfo = await commands.piInfo(piSessionIdRef.current);
+        if (currentInfo.status === "ok") {
+          setPiInfo(currentInfo.data);
+          if (!currentInfo.data.running) {
+            return sendPiMessage(userMessage, displayLabel, imageDataUrls, true);
+          }
+        }
+      } catch (e) {
+        console.warn("[Pi] failed to verify current session before enqueue:", e);
+      }
+    }
+
     if (!piInfo?.running) {
       // No Pi running → fall back to the normal start-and-send path.
       return sendPiMessage(userMessage, displayLabel, imageDataUrls);
@@ -6503,6 +6533,12 @@ export function StandaloneChat({
       );
       const queuedTurnIntentId = `queued-${result.status === "ok" ? result.data : Date.now()}`;
       if (result.status !== "ok") {
+        if (result.error.includes("Pi not initialized")) {
+          if (queuedAttachments) {
+            pendingAttachmentsRef.current = queuedAttachments;
+          }
+          return sendPiMessage(userMessage, displayLabel, queuedImageDataUrls, true);
+        }
         setInput(prevInput);
         if (hadPastedImages) setPastedImages(queuedImageDataUrls);
         toast({ title: "failed to queue message", description: result.error, variant: "destructive" });
@@ -6580,11 +6616,11 @@ export function StandaloneChat({
     clearActivePiTurnState();
   }
 
-  async function sendPiMessage(userMessage: string, displayLabel?: string, imageDataUrls?: string[]) {
+  async function sendPiMessage(userMessage: string, displayLabel?: string, imageDataUrls?: string[], forceStart = false) {
     clearPendingSteerTransportState();
 
     // Auto-start Pi if it's not running yet (new session or crash recovery)
-    if (!piInfo?.running) {
+    if (forceStart || !piInfo?.running) {
       if (piStartInFlightRef.current) {
         if (!autoSendBypassRef.current) {
           toast({ title: "Pi starting", description: "Please wait a moment", variant: "destructive" });
