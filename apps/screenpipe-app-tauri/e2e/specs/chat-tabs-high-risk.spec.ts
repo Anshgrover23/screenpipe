@@ -14,6 +14,8 @@
  *   the closed tab.
  * - History view row selection replaces the active tab slot.
  * - A streamed chat can be opened in a tab, left, and returned to with content.
+ * - Fast template-card sends target the active empty top tab.
+ * - Repeated intentional template-card sends remain separate sidebar rows.
  *
  * Run with:
  *   bun run test:e2e -- --spec e2e/specs/chat-tabs-high-risk.spec.ts
@@ -32,8 +34,11 @@ const DELETE_ID = "88888888-eeee-4eee-8eee-eeeeeeeeeeee";
 const HISTORY_ID = "88888888-ffff-4fff-8fff-ffffffffffff";
 const EXTERNAL_ID = "88888888-1111-4111-8111-111111111111";
 const STREAM_ID = "88888888-2222-4222-8222-222222222222";
+const AUTOMATE_TEMPLATE_CARD_TEST_ID = "summary-template-card-automate-my-work";
+const AUTOMATE_TEMPLATE_PROMPT_NEEDLE = "screenpipe automation expert";
 
 const TEST_IDS = [ARCHIVE_ID, DELETE_ID, HISTORY_ID, EXTERNAL_ID, STREAM_ID] as const;
+const templateRunChatIds = new Set<string>();
 
 interface TabState {
   ids: string[];
@@ -45,7 +50,7 @@ function chatFilePath(id: string): string {
 }
 
 function cleanupTestChats(): void {
-  for (const id of TEST_IDS) {
+  for (const id of [...TEST_IDS, ...templateRunChatIds]) {
     try {
       if (existsSync(chatFilePath(id))) rmSync(chatFilePath(id));
     } catch {
@@ -71,6 +76,7 @@ function cleanupTestChats(): void {
       // ignore
     }
   }
+  templateRunChatIds.clear();
 }
 
 function writeConversation(id: string, title: string): void {
@@ -184,6 +190,46 @@ async function emitAgentStream(sessionId: string, deltaCount: number): Promise<v
   );
 }
 
+async function installPromptRecorder(): Promise<void> {
+  await browser.execute(() => {
+    const g = globalThis as unknown as { __e2ePiPromptCaptures?: unknown[] };
+    g.__e2ePiPromptCaptures = [];
+  });
+}
+
+async function readCapturedPrompts(): Promise<Array<{ sessionId: string; message: string; at: number }>> {
+  return (await browser.execute(() => {
+    const g = globalThis as unknown as {
+      __e2ePiPromptCaptures?: Array<{ sessionId: string; message: string; at: number }>;
+    };
+    return g.__e2ePiPromptCaptures ?? [];
+  })) as Array<{ sessionId: string; message: string; at: number }>;
+}
+
+async function waitForPromptCapture(
+  sessionId: string,
+): Promise<{ sessionId: string; message: string; at: number }> {
+  let match: { sessionId: string; message: string; at: number } | undefined;
+  await browser.waitUntil(
+    async () => {
+      const captures = await readCapturedPrompts();
+      match = captures.find(
+        (capture) =>
+          capture.sessionId === sessionId &&
+          capture.message.includes(AUTOMATE_TEMPLATE_PROMPT_NEEDLE),
+      );
+      return Boolean(match);
+    },
+    {
+      timeout: t(20_000),
+      interval: 250,
+      timeoutMsg: `template prompt was not captured for active session ${sessionId}`,
+    },
+  );
+  if (!match) throw new Error(`missing prompt capture for ${sessionId}`);
+  return match;
+}
+
 async function readTabState(): Promise<TabState> {
   return (await browser.execute(() => {
     const tabNodes = Array.from(
@@ -240,6 +286,16 @@ async function clickTopNewChat(): Promise<TabState> {
       state.ids.length === before.ids.length + 1 && state.activeId !== before.activeId,
     "top New Chat did not append exactly one active tab",
   );
+}
+
+async function clickAutomateTemplateCard(): Promise<void> {
+  const card = await waitForTestId(AUTOMATE_TEMPLATE_CARD_TEST_ID, 10_000);
+  await browser.execute((testId: string) => {
+    document
+      .querySelector<HTMLElement>(`[data-testid="${testId}"]`)
+      ?.scrollIntoView({ block: "center", inline: "nearest" });
+  }, AUTOMATE_TEMPLATE_CARD_TEST_ID);
+  await card.click();
 }
 
 async function clickTab(id: string): Promise<TabState> {
@@ -370,7 +426,7 @@ async function saveAndSyncConversation(id: string, title: string): Promise<void>
 }
 
 async function dropTestSessions(): Promise<void> {
-  for (const id of TEST_IDS) {
+  for (const id of [...TEST_IDS, ...templateRunChatIds]) {
     await emitTauri("chat-deleted", { id }).catch(() => {});
   }
 }
@@ -512,6 +568,66 @@ describe("Chat workspace tabs high-risk flows", function () {
     const expected = [...before.ids];
     expected[replaceIndex] = EXTERNAL_ID;
     expect(state.ids).toEqual(expected);
+  });
+
+  it("routes a fast template-card send to the active empty top tab", async () => {
+    const before = await readTabState();
+    await installPromptRecorder();
+
+    const opened = await clickTopNewChat();
+    const targetId = opened.activeId;
+    if (!targetId) throw new Error("top New Chat did not create an active target tab");
+    templateRunChatIds.add(targetId);
+
+    await clickAutomateTemplateCard();
+    const capture = await waitForPromptCapture(targetId);
+    const captures = await readCapturedPrompts();
+
+    expect(capture.sessionId).toBe(targetId);
+    if (before.activeId) {
+      expect(
+        captures.some(
+          (entry) =>
+            entry.sessionId === before.activeId &&
+            entry.message.includes(AUTOMATE_TEMPLATE_PROMPT_NEEDLE),
+        ),
+      ).toBe(false);
+    }
+
+    const after = await readTabState();
+    expect(after.activeId).toBe(targetId);
+  });
+
+  it("keeps repeated intentional template-card runs as separate sidebar rows", async () => {
+    await installPromptRecorder();
+
+    const first = await clickTopNewChat();
+    const firstId = first.activeId;
+    if (!firstId) throw new Error("first template run did not get an active tab");
+    templateRunChatIds.add(firstId);
+    await clickAutomateTemplateCard();
+    await waitForPromptCapture(firstId);
+
+    const second = await clickTopNewChat();
+    const secondId = second.activeId;
+    if (!secondId) throw new Error("second template run did not get an active tab");
+    templateRunChatIds.add(secondId);
+    expect(secondId).not.toBe(firstId);
+    await clickAutomateTemplateCard();
+    await waitForPromptCapture(secondId);
+
+    await waitForSidebarRow(firstId);
+    await waitForSidebarRow(secondId);
+
+    const rows = await browser.execute(
+      (a: string, b: string) => ({
+        first: Boolean(document.querySelector(`[data-testid="chat-row-${a}"]`)),
+        second: Boolean(document.querySelector(`[data-testid="chat-row-${b}"]`)),
+      }),
+      firstId,
+      secondId,
+    );
+    expect(rows).toEqual({ first: true, second: true });
   });
 
   it("preserves streamed chat content after switching away and returning to its tab", async () => {

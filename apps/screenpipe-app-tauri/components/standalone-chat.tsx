@@ -90,6 +90,11 @@ import {
 } from "@/lib/chat-utils";
 import { useAutoSuggestions, type Suggestion } from "@/lib/hooks/use-auto-suggestions";
 import { SummaryCards, type ConnectionSetupSuggestion } from "@/components/chat/summary-cards";
+import {
+  metadataFromChatSendOptions,
+  type ChatSendMetadata,
+  type ChatSendOptions,
+} from "@/lib/chat-send-metadata";
 import { type CustomTemplate } from "@/lib/summary-templates";
 import {
   buildDailyLimitMessage,
@@ -638,6 +643,7 @@ interface Message {
   displayContent?: string; // short label shown in chat (e.g. template name)
   intent?: "steer";
   turnIntentId?: string;
+  metadata?: ChatSendMetadata;
   images?: string[]; // base64 data URLs of attached images
   attachments?: ChatAttachment[]; // non-image files extracted to text; rendered as cards above the bubble
   timestamp: number;
@@ -676,6 +682,11 @@ type TurnIntentRecord = {
   queueId?: string;
   createdAt: number;
   consumedAssistantId?: string;
+};
+
+type ResolvedChatSendOptions = ChatSendOptions & {
+  targetSessionId: string;
+  baseMessages: Message[];
 };
 
 type PendingSteerBatchItem = {
@@ -2762,7 +2773,7 @@ export function StandaloneChat({
     const idx = messages.findIndex((m) => m.id === message.id);
     if (idx === -1) return;
     setMessages((prev) => prev.slice(0, idx));
-    sendMessage(trimmed, message.displayContent);
+    sendMessage(trimmed, message.displayContent, undefined, { source: "retry" });
   };
 
   // Given a click on a rendered message bubble, compute the character offset
@@ -3070,7 +3081,7 @@ export function StandaloneChat({
   const lastUserMessageRef = useRef<string>("");
 
   // Ref to sendMessage so useEffect callbacks can call it without stale closures
-  const sendMessageRef = useRef<(msg: string, displayLabel?: string, imageDataUrls?: string[]) => Promise<void>>();
+  const sendMessageRef = useRef<(msg: string, displayLabel?: string, imageDataUrls?: string[], options?: ChatSendOptions) => Promise<void>>();
   // Bypass guard for auto-send from chat-prefill (Pi confirmed running but React state stale)
   const autoSendBypassRef = useRef(false);
 
@@ -3733,7 +3744,10 @@ export function StandaloneChat({
             autoSendBypassRef.current = true;
             await new Promise(r => setTimeout(r, 200));
             if (sendMessageRef.current) {
-              await sendMessageRef.current(fullMessage, displayLabel, prefillImages);
+              await sendMessageRef.current(fullMessage, displayLabel, prefillImages, {
+                targetSessionId: newSid,
+                source: "auto-suggestion",
+              });
               setInput("");
               if (inputRef.current) inputRef.current.style.height = "auto";
             }
@@ -6440,14 +6454,77 @@ export function StandaloneChat({
     return takeQueuedDisplayById(sessionId, match[0]);
   }
 
-  async function enqueuePiMessage(userMessage: string, displayLabel?: string, imageDataUrls?: string[]) {
+  function resolveChatSendOptions(options: ChatSendOptions = {}): ResolvedChatSendOptions {
+    const state = useChatStore.getState();
+    const targetSessionId =
+      options.targetSessionId ||
+      state.currentId ||
+      state.panelSessionId ||
+      conversationId ||
+      piSessionIdRef.current ||
+      crypto.randomUUID();
+    const existing = state.sessions[targetSessionId];
+    const targetMatchesPanel = conversationId === targetSessionId;
+    const baseMessages = targetMatchesPanel
+      ? messages
+      : (((existing?.messages as Message[] | undefined) ?? []) as Message[]);
+
+    if (!existing) {
+      state.actions.upsert({
+        id: targetSessionId,
+        title: "untitled",
+        preview: "",
+        status: "idle",
+        messageCount: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        pinned: false,
+        unread: false,
+        draft: true,
+        messages: [],
+      });
+    }
+
+    const latestState = useChatStore.getState();
+    if (!latestState.openTabIds.includes(targetSessionId)) {
+      latestState.actions.openChatTab(targetSessionId);
+    }
+    latestState.actions.setCurrent(targetSessionId);
+    latestState.actions.setPanelSession(targetSessionId);
+
+    if (piSessionIdRef.current !== targetSessionId) {
+      piSessionIdRef.current = targetSessionId;
+      piSessionSyncedRef.current = baseMessages.length === 0;
+      piStreamingTextRef.current = typeof existing?.streamingText === "string" ? existing.streamingText : "";
+      piMessageIdRef.current = existing?.streamingMessageId ?? null;
+      piContentBlocksRef.current = ([...(existing?.contentBlocks ?? [])] as ContentBlock[]);
+      setMessages(baseMessages);
+      setConversationId(targetSessionId);
+      setIsLoading(Boolean(existing?.isLoading));
+      setIsStreaming(Boolean(existing?.isStreaming));
+    } else if (conversationId !== targetSessionId) {
+      setConversationId(targetSessionId);
+    }
+
+    return {
+      ...options,
+      source: options.source ?? "composer",
+      targetSessionId,
+      baseMessages,
+    };
+  }
+
+  async function enqueuePiMessage(userMessage: string, displayLabel?: string, imageDataUrls?: string[], options?: ResolvedChatSendOptions) {
+    const sendOptions = options ?? resolveChatSendOptions({ source: "queue" });
+    const targetSessionId = sendOptions.targetSessionId;
+    const baseMessages = sendOptions.baseMessages;
     if (piInfo?.running) {
       try {
-        const currentInfo = await commands.piInfo(piSessionIdRef.current);
+        const currentInfo = await commands.piInfo(targetSessionId);
         if (currentInfo.status === "ok") {
           setPiInfo(currentInfo.data);
           if (!currentInfo.data.running) {
-            return sendPiMessage(userMessage, displayLabel, imageDataUrls, true);
+            return sendPiMessage(userMessage, displayLabel, imageDataUrls, true, sendOptions);
           }
         }
       } catch (e) {
@@ -6457,7 +6534,7 @@ export function StandaloneChat({
 
     if (!piInfo?.running) {
       // No Pi running → fall back to the normal start-and-send path.
-      return sendPiMessage(userMessage, displayLabel, imageDataUrls);
+      return sendPiMessage(userMessage, displayLabel, imageDataUrls, false, sendOptions);
     }
 
     // Convert any data-URL pastes to the Pi image-content shape (same format
@@ -6484,8 +6561,8 @@ export function StandaloneChat({
     // message, and any Pi state divergence in between manifested as
     // "chat suddenly forgot what we were talking about."
     let queuedPrompt = userMessage;
-    if (messages.length > 0) {
-      const historyLines = messages
+    if (baseMessages.length > 0) {
+      const historyLines = baseMessages
         .slice(-40)
         .map((m) => {
           let text = m.content || "";
@@ -6517,7 +6594,7 @@ export function StandaloneChat({
       const g = window as any;
       if (Array.isArray(g.__e2ePiPromptCaptures)) {
         g.__e2ePiPromptCaptures.push({
-          sessionId: piSessionIdRef.current,
+          sessionId: targetSessionId,
           message: queuedPrompt,
           at: Date.now(),
         });
@@ -6526,7 +6603,7 @@ export function StandaloneChat({
 
     try {
       const result = await commands.piQueuePrompt(
-        piSessionIdRef.current,
+        targetSessionId,
         queuedPrompt,
         piImages.length > 0 ? piImages : null,
         queuedPreviewForText(userMessage),
@@ -6537,7 +6614,7 @@ export function StandaloneChat({
           if (queuedAttachments) {
             pendingAttachmentsRef.current = queuedAttachments;
           }
-          return sendPiMessage(userMessage, displayLabel, queuedImageDataUrls, true);
+          return sendPiMessage(userMessage, displayLabel, queuedImageDataUrls, true, sendOptions);
         }
         setInput(prevInput);
         if (hadPastedImages) setPastedImages(queuedImageDataUrls);
@@ -6547,14 +6624,14 @@ export function StandaloneChat({
 
       registerTurnIntent({
         id: queuedTurnIntentId,
-        sessionId: piSessionIdRef.current,
+        sessionId: targetSessionId,
         kind: "queued",
         content: userMessage,
         preview: queuedPreviewForText(userMessage),
         queueId: result.data,
         createdAt: Date.now(),
       });
-      restoreQueuedDisplay(piSessionIdRef.current, result.data, {
+      restoreQueuedDisplay(targetSessionId, result.data, {
         preview: queuedPreviewForText(userMessage),
         images: queuedImageDataUrls,
         ...(queuedAttachments ? { attachments: queuedAttachments } : {}),
@@ -6584,14 +6661,14 @@ export function StandaloneChat({
     setIsStreaming(false);
   }
 
-  async function interruptActivePiTurn() {
+  async function interruptActivePiTurn(sessionId = piSessionIdRef.current) {
     const hasActiveTurn = isLoading || isStreaming || !!piMessageIdRef.current;
     if (!hasActiveTurn) return;
 
     let aborted = false;
     try {
       const abortResult = await Promise.race([
-        commands.piAbort(piSessionIdRef.current),
+        commands.piAbort(sessionId),
         new Promise<{ status: "error"; error: string }>((resolve) => {
           window.setTimeout(() => resolve({ status: "error", error: "Abort timed out" }), 1_500);
         }),
@@ -6616,7 +6693,17 @@ export function StandaloneChat({
     clearActivePiTurnState();
   }
 
-  async function sendPiMessage(userMessage: string, displayLabel?: string, imageDataUrls?: string[], forceStart = false) {
+  async function sendPiMessage(
+    userMessage: string,
+    displayLabel?: string,
+    imageDataUrls?: string[],
+    forceStart = false,
+    options?: ResolvedChatSendOptions,
+  ) {
+    const sendOptions = options ?? resolveChatSendOptions();
+    const targetSessionId = sendOptions.targetSessionId;
+    const baseMessages = sendOptions.baseMessages;
+    const messageMetadata = metadataFromChatSendOptions(sendOptions);
     clearPendingSteerTransportState();
 
     // Auto-start Pi if it's not running yet (new session or crash recovery)
@@ -6640,7 +6727,7 @@ export function StandaloneChat({
         try {
           const home = await homeDir();
           const dir = await join(home, ".screenpipe", "pi-chat");
-          const result = await commands.piStart(piSessionIdRef.current, dir, settings.user?.token ?? null, providerConfig);
+          const result = await commands.piStart(targetSessionId, dir, settings.user?.token ?? null, providerConfig);
           if (result.status === "ok" && result.data.running) {
             setPiInfo(result.data);
             piSessionSyncedRef.current = false;
@@ -6669,7 +6756,7 @@ export function StandaloneChat({
       await piPresetSwitchPromiseRef.current;
     }
 
-    await interruptActivePiTurn();
+    await interruptActivePiTurn(targetSessionId);
     forceQueueModeRef.current = true;
 
     const outgoingImages = imageDataUrls ?? pastedImages;
@@ -6681,6 +6768,7 @@ export function StandaloneChat({
       role: "user",
       content: userMessage,
       ...(displayLabel ? { displayContent: displayLabel } : {}),
+      ...(messageMetadata ? { metadata: messageMetadata } : {}),
       ...(outgoingImages.length > 0 ? { images: [...outgoingImages] } : {}),
       ...(consumedAttachments ? { attachments: consumedAttachments } : {}),
       timestamp: Date.now(),
@@ -6704,12 +6792,16 @@ export function StandaloneChat({
 
     let nextRowsAfterUserAppend: Message[] | null = null;
     setMessages((prev) => {
-      const next = [...prev, newUserMessage];
+      const base = conversationId === targetSessionId ? prev : baseMessages;
+      const next = [...base, newUserMessage];
       nextRowsAfterUserAppend = next;
       return next;
     });
     if (nextRowsAfterUserAppend) {
-      void saveConversation(nextRowsAfterUserAppend, { refreshHistory: false });
+      void saveConversation(nextRowsAfterUserAppend, {
+        refreshHistory: false,
+        conversationIdOverride: targetSessionId,
+      });
     }
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
@@ -6727,7 +6819,7 @@ export function StandaloneChat({
     // reply with no preceding user message. By writing both messages
     // here, the store is at least as fresh as the panel and survives
     // any closure staleness.
-    const sidNow = piSessionIdRef.current;
+    const sidNow = targetSessionId;
     if (sidNow) {
       const storeState = useChatStore.getState();
       if (!storeState.sessions[sidNow]) {
@@ -6779,7 +6871,7 @@ export function StandaloneChat({
       model: activePreset?.model,
       has_images: outgoingImages.length > 0 || !!prefillFrameId,
       has_context: !!prefillContext,
-      message_index: messages.filter((m) => m.role === "user").length,
+      message_index: baseMessages.filter((m) => m.role === "user").length,
     });
 
     // No timeout — Pi can run for minutes on long tasks (e.g. 30-day analysis
@@ -6873,8 +6965,8 @@ export function StandaloneChat({
       // (preset change, reauth, the conversation-load handler) still
       // toggle it for diagnostics, but it no longer gates injection.
       let promptMessage = userMessage;
-      if (messages.length > 0) {
-        const historyLines = messages
+      if (baseMessages.length > 0) {
+        const historyLines = baseMessages
           .slice(-40)
           .map(m => {
             let text = m.content || "";
@@ -6905,7 +6997,7 @@ export function StandaloneChat({
         const g = window as any;
         if (Array.isArray(g.__e2ePiPromptCaptures)) {
           g.__e2ePiPromptCaptures.push({
-            sessionId: piSessionIdRef.current,
+            sessionId: targetSessionId,
             message: promptMessage,
             at: Date.now(),
           });
@@ -6914,7 +7006,7 @@ export function StandaloneChat({
 
       // Send prompt — abort/new_session now await completion, so no retry needed
       let result = await commands.piPrompt(
-        piSessionIdRef.current,
+        targetSessionId,
         promptMessage,
         piImages.length > 0 ? piImages : null,
         null,
@@ -6929,7 +7021,7 @@ export function StandaloneChat({
           const dir = await join(home, ".screenpipe", "pi-chat");
           const providerConfig = buildProviderConfig();
           const startRes = await commands.piStart(
-            piSessionIdRef.current,
+            targetSessionId,
             dir,
             settings.user?.token ?? null,
             providerConfig,
@@ -6941,7 +7033,7 @@ export function StandaloneChat({
               setRunningConfigFromProviderConfig(providerConfig);
             }
             result = await commands.piPrompt(
-              piSessionIdRef.current,
+              targetSessionId,
               promptMessage,
               piImages.length > 0 ? piImages : null,
               null,
@@ -7086,12 +7178,18 @@ export function StandaloneChat({
     }
   }
 
-  async function sendMessage(userMessage: string, displayLabel?: string, imageDataUrls?: string[]) {
+  async function sendMessage(
+    userMessage: string,
+    displayLabel?: string,
+    imageDataUrls?: string[],
+    options?: ChatSendOptions,
+  ) {
     if ((!canChat && !autoSendBypassRef.current) || (!activePreset && !autoSendBypassRef.current)) return;
     const trimmed = userMessage.trim();
     const outgoingImages = imageDataUrls ?? pastedImages;
     const queuedDocs = attachedDocsRef.current;
     if (!trimmed && outgoingImages.length === 0 && queuedDocs.length === 0) return;
+    const sendOptions = resolveChatSendOptions(options);
 
     // Fold any attached documents into the outgoing turn. The extracted
     // text rides in `content` (what the model sees, kept for
@@ -7136,7 +7234,7 @@ export function StandaloneChat({
         : undefined;
       const largeContext = await externalizeLargeContextIfNeeded(
         outgoingMessage,
-        piSessionIdRef.current,
+        sendOptions.targetSessionId,
         taskHint,
       );
       if (largeContext) {
@@ -7165,7 +7263,7 @@ export function StandaloneChat({
     // normal turn), otherwise user bubbles can drift.
     if (forceQueueModeRef.current || sendDispatchInFlightRef.current || piMessageIdRef.current || isLoading || isStreaming) {
       try {
-        return await enqueuePiMessage(outgoingMessage, outgoingDisplay, imageDataUrls);
+        return await enqueuePiMessage(outgoingMessage, outgoingDisplay, imageDataUrls, sendOptions);
       } catch (e) {
         restoreDocsOnError(e);
       }
@@ -7174,7 +7272,7 @@ export function StandaloneChat({
     sendDispatchInFlightRef.current = true;
     try {
       // All providers route through Pi agent
-      return await sendPiMessage(outgoingMessage, outgoingDisplay, imageDataUrls);
+      return await sendPiMessage(outgoingMessage, outgoingDisplay, imageDataUrls, false, sendOptions);
     } catch (e) {
       restoreDocsOnError(e);
     } finally {
@@ -7195,7 +7293,12 @@ export function StandaloneChat({
 
   async function queueFollowUpMessage(userMessage: string, displayLabel?: string) {
     if ((!canChat && !autoSendBypassRef.current) || (!activePreset && !autoSendBypassRef.current)) return;
-    return enqueuePiMessage(userMessage, displayLabel);
+    return enqueuePiMessage(
+      userMessage,
+      displayLabel,
+      undefined,
+      resolveChatSendOptions({ source: "auto-suggestion" }),
+    );
   }
 
   // Queue UI is session-scoped. On chat switch, hydrate pending items for the
@@ -8859,7 +8962,7 @@ export function StandaloneChat({
                       message.id === activeSourceFooterMessageId
                     }
                     onImageClick={(images, index) => setImageViewer({ images, index })}
-                    onRetry={(prompt) => sendMessage(prompt)}
+                    onRetry={(prompt) => sendMessage(prompt, undefined, undefined, { source: "retry" })}
                     onOpenViewerPath={openFilePreview}
                   />
                 )}
@@ -8912,7 +9015,7 @@ export function StandaloneChat({
                         const userMsg = messages[userMsgIndex];
                         // Remove user message and everything after it, then resend
                         setMessages((prev) => prev.slice(0, userMsgIndex));
-                        sendMessage(userMsg.content, userMsg.displayContent);
+                        sendMessage(userMsg.content, userMsg.displayContent, undefined, { source: "retry" });
                       }}
                       className="p-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
                       title="Retry"
@@ -9125,7 +9228,7 @@ export function StandaloneChat({
                   <button
                     key={i}
                     type="button"
-                    onClick={() => sendMessage(q)}
+                    onClick={() => sendMessage(q, undefined, undefined, { source: "auto-suggestion" })}
                     className="px-2.5 py-1 text-[11px] bg-primary/10 hover:bg-primary/20 rounded-full border border-primary/20 hover:border-primary/40 text-primary hover:text-primary transition-colors cursor-pointer"
                   >
                     {q}
@@ -9148,7 +9251,7 @@ export function StandaloneChat({
                 <button
                   key={i}
                   type="button"
-                  onClick={() => sendMessage(s.text)}
+                  onClick={() => sendMessage(s.text, undefined, undefined, { source: "auto-suggestion" })}
                   className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono bg-muted/20 hover:bg-foreground hover:text-background border border-border/20 hover:border-foreground text-muted-foreground transition-all duration-150 cursor-pointer max-w-[280px]"
                   title={s.preview ? `${s.text} — ${s.preview}` : s.text}
                 >
@@ -9194,7 +9297,7 @@ export function StandaloneChat({
                       <button
                         key={i}
                         type="button"
-                        onClick={() => sendMessage(s.text)}
+                        onClick={() => sendMessage(s.text, undefined, undefined, { source: "auto-suggestion" })}
                         className="text-left px-2 py-1.5 text-[11px] font-mono rounded-sm hover:bg-muted text-muted-foreground hover:text-foreground transition-colors flex items-start gap-1.5"
                         title={s.preview ? `${s.text} — ${s.preview}` : s.text}
                       >

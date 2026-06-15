@@ -29,6 +29,7 @@ import {
   conversationDedupKey,
   messagesHaveCompletedReply,
 } from "@/lib/chat-dedup";
+import { isIntentionalTemplateSendMetadata } from "@/lib/chat-send-metadata";
 
 export type SessionStatus =
   | "idle" // not currently producing output
@@ -850,6 +851,10 @@ function compareForSidebar(a: SessionRecord, b: SessionRecord): number {
  *  user message yet). */
 function sessionDedupKey(s: SessionRecord): string | null {
   if (s.kind === "pipe-watch" || s.kind === "pipe-run") return null;
+  const firstUser = ((s.messages ?? []) as Array<{ role?: string; metadata?: unknown }>).find(
+    (m) => m?.role === "user",
+  );
+  if (isIntentionalTemplateSendMetadata(firstUser?.metadata)) return null;
   return conversationDedupKey({ kind: s.kind, messages: s.messages }) ?? s.dedupKey ?? null;
 }
 

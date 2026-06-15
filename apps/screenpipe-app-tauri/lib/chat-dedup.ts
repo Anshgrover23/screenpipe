@@ -21,6 +21,8 @@
 // dragging the filesystem layer into the store's dependency graph.
 // ---------------------------------------------------------------------------
 
+import { isIntentionalTemplateSendMetadata } from "@/lib/chat-send-metadata";
+
 /** Placeholder the chat panel writes for an assistant turn that hasn't started
  *  streaming yet (see standalone-chat.tsx send path). Centralized here so the
  *  dedup's "completed reply" check can't silently drift from the writer. */
@@ -36,6 +38,7 @@ export const CONVERSATION_DEDUP_WINDOW_MS = 30 * 60 * 1000;
 interface DedupMessageLike {
   role?: string;
   content?: unknown;
+  metadata?: unknown;
   contentBlocks?: unknown[];
 }
 
@@ -53,6 +56,7 @@ export function conversationDedupKey(conv: DedupConvLike | null | undefined): st
   if (kind !== "chat") return null;
   const messages = Array.isArray(conv?.messages) ? (conv!.messages as DedupMessageLike[]) : [];
   const firstUser = messages.find((m) => m?.role === "user");
+  if (isIntentionalTemplateSendMetadata(firstUser?.metadata)) return null;
   const raw = typeof firstUser?.content === "string" ? firstUser.content : "";
   const cleaned = raw.trim().toLowerCase().replace(/\s+/g, " ");
   return cleaned ? cleaned.slice(0, 200) : null;

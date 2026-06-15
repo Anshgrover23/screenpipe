@@ -13,9 +13,10 @@ import { FALLBACK_TEMPLATES, type CustomTemplate } from "@/lib/summary-templates
 import { type Suggestion } from "@/lib/hooks/use-auto-suggestions";
 import { IntegrationIcon } from "@/components/settings/connections-section";
 import { CustomSummaryBuilder } from "./custom-summary-builder";
+import { createChatSendRunId, type ChatSendOptions } from "@/lib/chat-send-metadata";
 
 interface SummaryCardsProps {
-  onSendMessage: (message: string, displayLabel?: string) => void;
+  onSendMessage: (message: string, displayLabel?: string, imageDataUrls?: string[], options?: ChatSendOptions) => void;
   onOpenConnection?: (connectionId: string) => void;
   connectionSetupSuggestions?: ConnectionSetupSuggestion[];
   autoSuggestions: Suggestion[];
@@ -150,7 +151,12 @@ export function SummaryCards({
       template_name: pipe.name,
       template_title: pipe.title,
     });
-    onSendMessage(pipe.prompt, `${pipe.icon} ${pipe.title}`);
+    onSendMessage(pipe.prompt, `${pipe.icon} ${pipe.title}`, undefined, {
+      source: "template-card",
+      templateId: pipe.name,
+      templateTitle: pipe.title,
+      runId: createChatSendRunId(),
+    });
   };
 
   const handleCustomTemplateClick = (template: CustomTemplate) => {
@@ -159,7 +165,12 @@ export function SummaryCards({
       template_id: template.id,
       template_title: template.title,
     });
-    onSendMessage(template.prompt, `\u{1F4CC} ${template.title}`);
+    onSendMessage(template.prompt, `\u{1F4CC} ${template.title}`, undefined, {
+      source: "custom-template",
+      templateId: template.id,
+      templateTitle: template.title,
+      runId: createChatSendRunId(),
+    });
   };
 
   const visibleConnectionSetupSuggestions = [
@@ -189,6 +200,7 @@ export function SummaryCards({
           <button
             key={pipe.name}
             onClick={() => handleCardClick(pipe)}
+            data-testid={`summary-template-card-${pipe.name}`}
             className="group text-left p-2 border border-border/40 bg-muted/20 hover:bg-foreground hover:text-background hover:border-foreground transition-all duration-150 cursor-pointer"
           >
             <div className="text-sm mb-0.5">{pipe.icon}</div>
@@ -286,6 +298,7 @@ export function SummaryCards({
             <button
               key={pipe.name}
               onClick={() => handleCardClick(pipe)}
+              data-testid={`summary-template-card-${pipe.name}`}
               className="group text-left p-2 border border-border/30 bg-muted/10 hover:bg-foreground hover:text-background hover:border-foreground transition-all duration-150 cursor-pointer"
             >
               <div className="text-sm mb-0.5">{pipe.icon}</div>

@@ -21,6 +21,7 @@ import type {
 	EnterpriseInstallMetadata,
 } from "@ee/lib/app-update-policy";
 import { type FontSize, applyFontSize } from "@/lib/utils/font-size";
+import type { ChatSendMetadata } from "@/lib/chat-send-metadata";
 export type VadSensitivity = "low" | "medium" | "high";
 
 export type AIProviderType =
@@ -89,6 +90,7 @@ export interface ChatMessage {
 	content: string;
 	intent?: "steer";
 	turnIntentId?: string;
+	metadata?: ChatSendMetadata;
 	timestamp: number;
 	contentBlocks?: any[];
 	sourceCitations?: SourceCitation[];

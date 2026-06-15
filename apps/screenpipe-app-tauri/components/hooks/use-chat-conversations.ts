@@ -27,6 +27,7 @@ import {
   resolveNewestBrowserState,
 } from "@/lib/browser-state-cache";
 import { commands, type AIPreset } from "@/lib/utils/tauri";
+import type { ChatSendMetadata } from "@/lib/chat-send-metadata";
 import {
   saveConversationFile,
   loadConversationFile,
@@ -64,6 +65,7 @@ export interface Message {
   content: string;
   intent?: "steer";
   turnIntentId?: string;
+  metadata?: ChatSendMetadata;
   displayContent?: string;
   images?: string[];
   timestamp: number;
@@ -122,6 +124,7 @@ interface UseChatConversationsOpts {
 interface SaveConversationOptions {
   refreshHistory?: boolean;
   syncActiveConversation?: boolean;
+  conversationIdOverride?: string;
 }
 
 interface StartNewConversationOptions {
@@ -548,7 +551,7 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     // during startNewConversation (setConversationId(null) → … →
     // setConversationId(newSid)); without the fallback the save would mint
     // a fresh uuid and duplicate the conversation.
-    const convId = conversationId || piSessionIdRef.current || crypto.randomUUID();
+    const convId = options.conversationIdOverride || conversationId || piSessionIdRef.current || crypto.randomUUID();
 
     // Try to load existing conversation to preserve createdAt + title + kind.
     const { loadConversationFile } = await import("@/lib/chat-storage");
@@ -747,6 +750,7 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
           content,
           ...(m.intent ? { intent: m.intent } : {}),
           ...(m.turnIntentId ? { turnIntentId: m.turnIntentId } : {}),
+          ...(m.metadata ? { metadata: m.metadata } : {}),
           timestamp: m.timestamp,
           ...(m.displayContent ? { displayContent: m.displayContent } : {}),
           ...(blocks?.length ? { contentBlocks: blocks } : {}),
@@ -774,9 +778,8 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
       // sidebar age after a fresh user message is already in `msgs`.
       ...(await (async () => {
         const { useChatStore } = await import("@/lib/stores/chat-store");
-        const sid = piSessionIdRef.current;
-        const fromStore = sid
-          ? useChatStore.getState().sessions[sid]?.lastUserMessageAt
+        const fromStore = convId
+          ? useChatStore.getState().sessions[convId]?.lastUserMessageAt
           : undefined;
         const lastUserMessageAt =
           computedLastUserMessageAt ?? fromStore ?? existing?.lastUserMessageAt;
@@ -1226,9 +1229,11 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
         content: m.content,
         ...((m as any).intent ? { intent: (m as any).intent } : {}),
         ...((m as any).turnIntentId ? { turnIntentId: (m as any).turnIntentId } : {}),
+        ...((m as any).metadata ? { metadata: (m as any).metadata } : {}),
         timestamp: m.timestamp,
         ...(m.displayContent ? { displayContent: m.displayContent } : {}),
         ...(m.contentBlocks?.length ? { contentBlocks: m.contentBlocks } : {}),
+        ...((m as any).attachments?.length ? { attachments: (m as any).attachments } : {}),
         ...((m as any).images?.length
           ? { images: (m as any).images }
           : (m as any).image
@@ -1393,6 +1398,7 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
           content,
           ...(m.intent ? { intent: m.intent } : {}),
           ...(m.turnIntentId ? { turnIntentId: m.turnIntentId } : {}),
+          ...(m.metadata ? { metadata: m.metadata } : {}),
           timestamp: m.timestamp,
           ...(m.displayContent ? { displayContent: m.displayContent } : {}),
           ...(blocks?.length ? { contentBlocks: blocks } : {}),

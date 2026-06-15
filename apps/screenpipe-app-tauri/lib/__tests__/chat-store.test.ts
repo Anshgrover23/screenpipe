@@ -597,6 +597,52 @@ describe("chat-store: cross-window duplicate row collapsing", () => {
     expect(selectOrderedSessions(useChatStore.getState())).toHaveLength(2);
   });
 
+  it("never merges intentional template-card chats that share the same prompt", () => {
+    const templatePrompt = "Analyze my habits and summarize my work.";
+    const templateMessages = (id: string, runId: string) =>
+      [
+        {
+          id: `${id}-u`,
+          role: "user",
+          content: templatePrompt,
+          metadata: {
+            source: "template-card",
+            templateId: "ai-habits",
+            templateTitle: "Automate My Work",
+            runId,
+          },
+          timestamp: 1,
+        },
+        { id: `${id}-a`, role: "assistant", content: "done", timestamp: 2 },
+      ] as any;
+
+    useChatStore.getState().actions.upsert(
+      baseRecord({
+        id: "template-run-1",
+        title: "⚡ Automate My Work",
+        messageCount: 2,
+        createdAt: 1_000,
+        dedupKey: templatePrompt.toLowerCase(),
+        messages: templateMessages("template-run-1", "run-1"),
+      }),
+    );
+    useChatStore.getState().actions.upsert(
+      baseRecord({
+        id: "template-run-2",
+        title: "⚡ Automate My Work",
+        messageCount: 2,
+        createdAt: 1_100,
+        dedupKey: templatePrompt.toLowerCase(),
+        messages: templateMessages("template-run-2", "run-2"),
+      }),
+    );
+
+    expect(selectOrderedSessions(useChatStore.getState()).map((s) => s.id).sort()).toEqual([
+      "template-run-1",
+      "template-run-2",
+    ]);
+  });
+
   it("keeps the visible twin rather than collapsing into a hidden one", () => {
     // The store holds hidden + visible at once (unlike the disk candidate set),
     // so a visible row must never be dropped in favor of a hidden twin — that

@@ -67,6 +67,7 @@ function putConversation(
     kind?: "chat" | "pipe-watch" | "pipe-run";
     createdAt?: number;
     titleSource?: "fallback" | "ai" | "user";
+    metadata?: unknown;
     /** When set, append an assistant message with this content. */
     assistantContent?: string;
   }
@@ -76,6 +77,7 @@ function putConversation(
       id: `${id}-m1`,
       role: "user",
       content: opts.content ?? id,
+      ...(opts.metadata ? { metadata: opts.metadata } : {}),
       timestamp: opts.updatedAt,
     },
   ];
@@ -330,6 +332,26 @@ describe("conversationDedupKey", () => {
       conversationDedupKey({ kind: "chat", messages: [{ role: "assistant", content: "hi" }] })
     ).toBeNull();
   });
+
+  it("returns null for intentional template-card sends with repeated prompts", () => {
+    expect(
+      conversationDedupKey({
+        kind: "chat",
+        messages: [
+          {
+            role: "user",
+            content: "Analyze my habits and summarize my work.",
+            metadata: {
+              source: "template-card",
+              templateId: "ai-habits",
+              templateTitle: "Automate My Work",
+              runId: "run-1",
+            },
+          },
+        ],
+      })
+    ).toBeNull();
+  });
 });
 
 describe("listConversations duplicate collapsing", () => {
@@ -387,6 +409,42 @@ describe("listConversations duplicate collapsing", () => {
     expect(rows.map((r) => r.id).sort()).toEqual([
       "pipe_imessage-sync_1",
       "pipe_imessage-sync_2",
+    ]);
+  });
+
+  it("does not collapse intentional template-card runs that share the same prompt", async () => {
+    const content = "Analyze my habits and summarize my work.";
+    putConversation("automate-run-1", {
+      updatedAt: 1_700_000_100_000,
+      createdAt: 1_700_000_100_000,
+      content,
+      title: "⚡ Automate My Work",
+      metadata: {
+        source: "template-card",
+        templateId: "ai-habits",
+        templateTitle: "Automate My Work",
+        runId: "template-run-1",
+      },
+      assistantContent: "first run complete",
+    });
+    putConversation("automate-run-2", {
+      updatedAt: 1_700_000_101_000,
+      createdAt: 1_700_000_101_000,
+      content,
+      title: "⚡ Automate My Work",
+      metadata: {
+        source: "template-card",
+        templateId: "ai-habits",
+        templateTitle: "Automate My Work",
+        runId: "template-run-2",
+      },
+      assistantContent: "second run complete",
+    });
+
+    const rows = await listConversations({ limit: CHAT_HISTORY_INITIAL_LIMIT });
+    expect(rows.map((r) => r.id).sort()).toEqual([
+      "automate-run-1",
+      "automate-run-2",
     ]);
   });
 
