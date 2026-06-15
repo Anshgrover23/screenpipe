@@ -307,6 +307,7 @@ export function ChatHistoryView({
     return (
       <div
         role="button"
+        data-testid={`chat-history-row-${conv.id}`}
         tabIndex={0}
         onClick={() => onSelectConversation(conv.id)}
         onKeyDown={(e) => {
@@ -389,6 +390,7 @@ export function ChatHistoryView({
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
+                  data-testid={`chat-history-row-actions-${conv.id}`}
                   onClick={(e) => e.stopPropagation()}
                   className={cn(
                     "h-7 w-7 inline-flex items-center justify-center",
@@ -522,7 +524,7 @@ export function ChatHistoryView({
   };
 
   return (
-    <div className="h-full flex flex-col min-h-0">
+    <div className="h-full flex flex-col min-h-0" data-testid="chat-history-view">
       <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto">
         {/* Sticky header: tabs + search/bulk bar */}
         <div className="sticky top-0 z-10 bg-background">
@@ -722,6 +724,7 @@ export function ChatHistoryView({
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
                     ref={searchInputRef}
+                    data-testid="chat-history-search"
                     placeholder="search chat"
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
@@ -749,6 +752,7 @@ export function ChatHistoryView({
                 </div>
                 <Button
                   variant="default"
+                  data-testid="chat-history-new"
                   className="h-9 px-4 gap-2 shrink-0"
                   onClick={() => {
                     setQuery("");

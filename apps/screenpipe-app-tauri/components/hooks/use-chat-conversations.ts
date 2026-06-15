@@ -1117,7 +1117,18 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     // which session is foreground — producing duplicated writes for
     // the new session and silently dropped writes for the old one.
     piSessionIdRef.current = conv.id;
-    store.actions.setCurrent(conv.id);
+    {
+      const latestStore = useChatStore.getState();
+      if (!latestStore.openTabIds.includes(conv.id)) {
+        const activeTabId =
+          latestStore.currentId ??
+          latestStore.panelSessionId ??
+          latestStore.openTabIds.at(-1) ??
+          null;
+        latestStore.actions.replaceChatTab(activeTabId, conv.id);
+      }
+      latestStore.actions.setCurrent(conv.id);
+    }
 
     // (3) Prefer the store whenever it has messages for this id. Two
     //     ways messages get there: (a) `markHydrated` was called on a
@@ -1419,6 +1430,7 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
           : {}),
       });
       store.actions.setMessages(newId, conversation.messages as any);
+      store.actions.openChatTab(newId);
       store.actions.setCurrent(newId);
       store.actions.setPanelSession(newId);
     } catch (e) {
@@ -1509,8 +1521,14 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
       piSessionIdRef.current = explicitId;
       piSessionSyncedRef.current = true;
       setConversationId(explicitId);
-      store.actions.setCurrent(explicitId);
-      store.actions.setPanelSession(explicitId);
+      {
+        const latestStore = useChatStore.getState();
+        if (!latestStore.openTabIds.includes(explicitId)) {
+          latestStore.actions.replaceChatTab(outgoingSid, explicitId);
+        }
+        latestStore.actions.setCurrent(explicitId);
+        latestStore.actions.setPanelSession(explicitId);
+      }
       setShowHistory(false);
       try {
         await emit("chat-current-session", { id: explicitId });
@@ -1521,6 +1539,9 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     }
 
     if (outgoingSid && localConversationEmpty && !options.forceNewEmpty) {
+      if (store.openTabIds.length === 0) {
+        store.actions.openChatTab(outgoingSid);
+      }
       store.actions.setCurrent(outgoingSid);
       store.actions.setPanelSession(outgoingSid);
       setShowHistory(false);
@@ -1578,7 +1599,22 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     const newSid = explicitId ?? crypto.randomUUID();
     piSessionIdRef.current = newSid;
     piSessionSyncedRef.current = true;
-    store.actions.setCurrent(newSid);
+    {
+      const latestStore = useChatStore.getState();
+      if (!latestStore.openTabIds.includes(newSid)) {
+        if (explicitId) {
+          const activeTabId =
+            latestStore.currentId ??
+            latestStore.panelSessionId ??
+            latestStore.openTabIds.at(-1) ??
+            null;
+          latestStore.actions.replaceChatTab(activeTabId, newSid);
+        } else {
+          latestStore.actions.openChatTab(newSid);
+        }
+      }
+      latestStore.actions.setCurrent(newSid);
+    }
     // Set conversationId to the new Pi session id immediately. The chat
     // panel's foreground bus registration (registerForeground) is keyed by
     // conversationId, and Pi events arrive with sessionId === piSessionId.

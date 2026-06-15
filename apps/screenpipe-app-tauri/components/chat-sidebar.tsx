@@ -411,6 +411,39 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
     emit("chat-load-conversation", { conversationId: id });
   };
 
+  const createFreshDraftSession = () => {
+    const fresh = crypto.randomUUID();
+    actions.upsert({
+      id: fresh,
+      title: "untitled",
+      preview: "",
+      status: "idle",
+      messageCount: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      pinned: false,
+      unread: false,
+      draft: true,
+    });
+    return fresh;
+  };
+
+  const removeOpenTabForSession = (id: string) => {
+    const store = useChatStore.getState();
+    const activeTabId = store.currentId ?? store.panelSessionId;
+    const isOpen = store.openTabIds.includes(id);
+    if (!isOpen && activeTabId !== id) return;
+
+    if (activeTabId === id) {
+      const fresh = createFreshDraftSession();
+      actions.replaceChatTab(id, fresh);
+      emit("chat-load-conversation", { conversationId: fresh });
+      return;
+    }
+
+    actions.closeChatTab(id);
+  };
+
   const handleArchive = async (id: string) => {
     // Stop any active session first to avoid immediate row resurrection
     // from trailing stream events.
@@ -419,24 +452,8 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
     // Archiving should tuck chats away immediately; users can reopen
     // the bucket manually when they want to review archived items.
     setArchivedCollapsed(true);
-    // Move the panel off a chat that just left the visible list.
-    if (id === currentId) {
-      const fresh = crypto.randomUUID();
-      actions.upsert({
-        id: fresh,
-        title: "untitled",
-        preview: "",
-        status: "idle",
-        messageCount: 0,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        pinned: false,
-        unread: false,
-        draft: true,
-      });
-      actions.setCurrent(fresh);
-      emit("chat-load-conversation", { conversationId: fresh });
-    }
+    // Move the tab strip off any chat that just left the visible list.
+    removeOpenTabForSession(id);
     // Best-effort persistence for restart durability.
     try {
       await updateConversationFlags(id, { hidden: true });
@@ -465,6 +482,14 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
   };
 
   const handleDeleteConfirmed = async (id: string) => {
+    const store = useChatStore.getState();
+    const activeTabId = store.currentId ?? store.panelSessionId;
+    const shouldReplaceActive = activeTabId === id;
+    if (shouldReplaceActive) {
+      const fresh = createFreshDraftSession();
+      actions.replaceChatTab(id, fresh);
+      emit("chat-load-conversation", { conversationId: fresh });
+    }
     actions.drop(id);
     try {
       await deleteConversationFile(id);
@@ -475,23 +500,6 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
       await emit("chat-deleted", { id });
     } catch {
       // ignore
-    }
-    if (id === currentId) {
-      const fresh = crypto.randomUUID();
-      actions.upsert({
-        id: fresh,
-        title: "untitled",
-        preview: "",
-        status: "idle",
-        messageCount: 0,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        pinned: false,
-        unread: false,
-        draft: true,
-      });
-      actions.setCurrent(fresh);
-      emit("chat-load-conversation", { conversationId: fresh });
     }
   };
 
@@ -649,6 +657,7 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
               headerAction={
                 <span
                   role="button"
+                  data-testid="chat-sidebar-view-all"
                   tabIndex={onViewAll ? 0 : -1}
                   className={cn(
                     "ml-auto inline-flex items-center gap-0.5 select-none",
@@ -724,11 +733,16 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
             <DialogDescription>Delete this chat? This cannot be undone.</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeletingSessionId(null)}>
+            <Button
+              variant="outline"
+              data-testid="chat-delete-cancel"
+              onClick={() => setDeletingSessionId(null)}
+            >
               Cancel
             </Button>
             <Button
               variant="destructive"
+              data-testid="chat-delete-confirm"
               onClick={async () => {
                 const id = deletingSessionId;
                 setDeletingSessionId(null);
@@ -1382,6 +1396,7 @@ function Section({
     <div className="flex flex-col min-h-0">
       <button
         type="button"
+        data-testid={`chat-sidebar-section-${title}`}
         onClick={() => onCollapsedChange(!collapsed)}
         className={cn(
           // Light header row — avoid the "boxed section" look.
@@ -1597,6 +1612,7 @@ export function SidebarChatRow({
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
+                data-testid={`chat-row-actions-${session.id}`}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => e.stopPropagation()}
                 className={cn(
@@ -1621,6 +1637,7 @@ export function SidebarChatRow({
               onPointerDown={(e) => e.stopPropagation()}
             >
               <DropdownMenuItem
+                data-testid={`chat-row-pin-${session.id}`}
                 className="text-[11px] h-[30px] px-2 gap-2 rounded-none focus:bg-muted/30"
                 onSelect={(e) => {
                   e.stopPropagation();
@@ -1631,6 +1648,7 @@ export function SidebarChatRow({
                 {session.pinned ? "Unpin" : "Pin"}
               </DropdownMenuItem>
               <DropdownMenuItem
+                data-testid={`chat-row-rename-${session.id}`}
                 className="text-[11px] h-[30px] px-2 gap-2 rounded-none focus:bg-muted/30"
                 onSelect={(e) => {
                   e.stopPropagation();
@@ -1642,6 +1660,7 @@ export function SidebarChatRow({
               </DropdownMenuItem>
               {!session.hidden ? (
                 <DropdownMenuItem
+                  data-testid={`chat-row-archive-${session.id}`}
                   className="text-[11px] h-[30px] px-2 gap-2 rounded-none focus:bg-muted/30"
                   onSelect={(e) => {
                     e.stopPropagation();
@@ -1653,6 +1672,7 @@ export function SidebarChatRow({
                 </DropdownMenuItem>
               ) : (
                 <DropdownMenuItem
+                  data-testid={`chat-row-unarchive-${session.id}`}
                   className="text-[11px] h-[30px] px-2 gap-2 rounded-none focus:bg-muted/30"
                   onSelect={(e) => {
                     e.stopPropagation();
@@ -1665,6 +1685,7 @@ export function SidebarChatRow({
               )}
               <DropdownMenuSeparator className="my-1 bg-border/70" />
               <DropdownMenuItem
+                data-testid={`chat-row-delete-${session.id}`}
                 className="text-[11px] h-[30px] px-2 gap-2 rounded-none text-destructive focus:text-destructive focus:bg-destructive/10"
                 onSelect={(e) => {
                   e.stopPropagation();

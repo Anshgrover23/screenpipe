@@ -374,23 +374,41 @@ describe("chat-store: recent switcher ordering", () => {
 describe("chat-store: open chat tabs", () => {
   beforeEach(reset);
 
-  it("opens the current session as a tab even before a session record exists", () => {
+  it("keeps selection separate from explicit top-tab opening", () => {
     useChatStore.getState().actions.setCurrent("draft-a");
 
+    // With no existing working set, the selector still exposes the active
+    // session so the UI has one tab to render.
     expect(selectOpenChatTabIds(useChatStore.getState())).toEqual(["draft-a"]);
 
     useChatStore.getState().actions.upsert(baseRecord({ id: "draft-a" }));
+    useChatStore.getState().actions.openChatTab("draft-a");
     useChatStore.getState().actions.setCurrent("draft-a");
 
     expect(selectOpenChatTabIds(useChatStore.getState())).toEqual(["draft-a"]);
+  });
+
+  it("does not append a non-open current session when a working set exists", () => {
+    useChatStore.getState().actions.upsert(baseRecord({ id: "A" }));
+    useChatStore.getState().actions.upsert(baseRecord({ id: "B" }));
+
+    useChatStore.getState().actions.openChatTab("A");
+    useChatStore.getState().actions.setCurrent("A");
+    useChatStore.getState().actions.setCurrent("B");
+
+    expect(selectOpenChatTabIds(useChatStore.getState())).toEqual(["A"]);
+    expect(useChatStore.getState().currentId).toBe("B");
   });
 
   it("keeps tab order stable and avoids duplicates", () => {
     useChatStore.getState().actions.upsert(baseRecord({ id: "A" }));
     useChatStore.getState().actions.upsert(baseRecord({ id: "B" }));
 
+    useChatStore.getState().actions.openChatTab("A");
     useChatStore.getState().actions.setCurrent("A");
+    useChatStore.getState().actions.openChatTab("B");
     useChatStore.getState().actions.setCurrent("B");
+    useChatStore.getState().actions.openChatTab("A");
     useChatStore.getState().actions.setCurrent("A");
 
     expect(selectOpenChatTabIds(useChatStore.getState())).toEqual(["A", "B"]);
@@ -401,7 +419,9 @@ describe("chat-store: open chat tabs", () => {
     useChatStore.getState().actions.upsert(baseRecord({ id: "B" }));
     useChatStore.getState().actions.upsert(baseRecord({ id: "draft" }));
 
+    useChatStore.getState().actions.openChatTab("A");
     useChatStore.getState().actions.setCurrent("A");
+    useChatStore.getState().actions.openChatTab("B");
     useChatStore.getState().actions.setCurrent("B");
     useChatStore.getState().actions.replaceChatTab("B", "draft");
 
@@ -415,8 +435,11 @@ describe("chat-store: open chat tabs", () => {
     useChatStore.getState().actions.upsert(baseRecord({ id: "B" }));
     useChatStore.getState().actions.upsert(baseRecord({ id: "C" }));
 
+    useChatStore.getState().actions.openChatTab("A");
     useChatStore.getState().actions.setCurrent("A");
+    useChatStore.getState().actions.openChatTab("B");
     useChatStore.getState().actions.setCurrent("B");
+    useChatStore.getState().actions.openChatTab("C");
     useChatStore.getState().actions.setCurrent("C");
 
     const fallback = useChatStore.getState().actions.closeChatTab("C");
@@ -430,6 +453,7 @@ describe("chat-store: open chat tabs", () => {
 
   it("drop removes a deleted session from the tab working set", () => {
     useChatStore.getState().actions.upsert(baseRecord({ id: "A" }));
+    useChatStore.getState().actions.openChatTab("A");
     useChatStore.getState().actions.setCurrent("A");
 
     useChatStore.getState().actions.drop("A");

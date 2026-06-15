@@ -211,7 +211,8 @@ interface ChatStoreActions {
    *  delete from disk — caller does that). */
   drop: (id: string) => void;
   /** Mark a session as currently in front. Implicitly clears its unread
-   *  flag — viewing the chat counts as reading it. */
+   *  flag — viewing the chat counts as reading it. This does not add a
+   *  top tab; callers must use openChatTab/replaceChatTab for that. */
   setCurrent: (id: string | null) => void;
   /** Add a session to the top chat working set without switching to it. */
   openChatTab: (id: string) => void;
@@ -403,7 +404,6 @@ export const useChatStore = create<ChatStore>((set) => ({
     setCurrent: (id) =>
       set((s) => {
         const viewedAt = Date.now();
-        const openTabIds = withOpenTabId(s.openTabIds, id);
         // Viewing a session counts as reading it — clear the unread flag
         // for the new current. Same atomic update so the row's unread
         // state can't transiently flicker between the setCurrent call and
@@ -411,14 +411,13 @@ export const useChatStore = create<ChatStore>((set) => ({
         if (id && s.sessions[id]) {
           return {
             currentId: id,
-            openTabIds,
             sessions: {
               ...s.sessions,
               [id]: { ...s.sessions[id], unread: false, lastViewedAt: viewedAt },
             },
           };
         }
-        return { currentId: id, openTabIds };
+        return { currentId: id };
       }),
 
     openChatTab: (id) =>
@@ -957,10 +956,12 @@ export function selectOpenChatTabIds(state: ChatTabsState): string[] {
     if (!ids.includes(id)) ids.push(id);
   }
 
-  const activeId = state.currentId ?? state.panelSessionId;
-  if (activeId && !ids.includes(activeId)) ids.push(activeId);
+  const visibleIds = ids.filter((id) => !state.sessions[id]?.hidden);
+  if (visibleIds.length > 0) return visibleIds;
 
-  return ids.filter((id) => !state.sessions[id]?.hidden);
+  const activeId = state.currentId ?? state.panelSessionId;
+  if (activeId && !state.sessions[activeId]?.hidden) return [activeId];
+  return [];
 }
 
 /**

@@ -386,7 +386,14 @@ function HomeContent() {
       const { listen } = await import("@tauri-apps/api/event");
       const u = await listen<ChatLoadConversationPayload>("chat-load-conversation", (event) => {
         if (cancelled) return;
-        if (!shouldActivateHomeSectionForChatLoadConversation(event.payload)) return;
+        const payload = event.payload;
+        if (!shouldActivateHomeSectionForChatLoadConversation(payload)) return;
+        if (payload?.tabBehavior !== "open") {
+          const store = useChatStore.getState();
+          const activeTabId =
+            store.currentId ?? store.panelSessionId ?? store.openTabIds.at(-1) ?? null;
+          store.actions.replaceChatTab(activeTabId, payload.conversationId);
+        }
         setActiveSection("home");
       });
       unlistenFn = u;

@@ -86,6 +86,7 @@ export type ChatTargetWindow = "home" | "chat";
 export interface ChatLoadConversationPayload {
   conversationId: string;
   targetWindow?: ChatTargetWindow;
+  tabBehavior?: "open" | "replace";
 }
 
 export const RECENT_CHAT_SEARCH_HANDOFF_EVENT = "recent-chat-search-handoff";
@@ -214,7 +215,10 @@ export async function openChatConversationInCurrentChatSurface(
     conversationId,
     targetWindow: currentWindowLabel === "chat" ? "chat" : "home",
   };
-  useChatStore.getState().actions.setCurrent(conversationId);
+  const store = useChatStore.getState();
+  const activeTabId =
+    store.currentId ?? store.panelSessionId ?? store.openTabIds.at(-1) ?? null;
+  store.actions.replaceChatTab(activeTabId, conversationId);
   await emit("chat-load-conversation", payload);
 }
 

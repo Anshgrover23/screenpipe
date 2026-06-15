@@ -98,7 +98,7 @@ export function ChatTabStrip({
     async (id: string) => {
       if (id === activeId) return;
       actions.openChatTab(id);
-      await emit("chat-load-conversation", { conversationId: id });
+      await emit("chat-load-conversation", { conversationId: id, tabBehavior: "open" });
     },
     [actions, activeId],
   );
@@ -109,7 +109,10 @@ export function ChatTabStrip({
       const fallbackId = actions.closeChatTab(id);
       if (!wasActive) return;
       if (fallbackId) {
-        await emit("chat-load-conversation", { conversationId: fallbackId });
+        await emit("chat-load-conversation", {
+          conversationId: fallbackId,
+          tabBehavior: "open",
+        });
         return;
       }
       await onNewChat();
@@ -129,6 +132,7 @@ export function ChatTabStrip({
           leftInsetClassName,
           className,
         )}
+        data-testid="chat-tab-strip"
         data-tauri-drag-region
         onMouseDown={(event) => {
           const target = event.target as HTMLElement | null;
@@ -139,6 +143,7 @@ export function ChatTabStrip({
         <div
           role="tablist"
           aria-label="open chats"
+          data-testid="chat-tab-list"
           className="chat-tab-list flex h-8 min-w-0 flex-1 !cursor-default items-center gap-1 overflow-x-auto overflow-y-hidden"
         >
           {visibleTabIds.length === 0 ? (
@@ -160,6 +165,9 @@ export function ChatTabStrip({
               return (
                 <div
                   key={id}
+                  data-chat-id={id}
+                  data-chat-active={active ? "true" : "false"}
+                  data-testid={`chat-tab-${id}`}
                   data-tauri-drag-region="false"
                   className={cn(
                     "group/tab relative flex h-8 min-w-[9rem] max-w-[14rem] shrink-0 !cursor-default items-center rounded-lg border text-xs transition-colors duration-150",
@@ -198,6 +206,7 @@ export function ChatTabStrip({
                         <button
                           type="button"
                           aria-label={`close ${title} tab`}
+                          data-testid={`chat-tab-close-${id}`}
                           data-tauri-drag-region="false"
                           onClick={(event) => {
                             event.stopPropagation();
@@ -224,6 +233,7 @@ export function ChatTabStrip({
               <button
                 type="button"
                 aria-label="new chat"
+                data-testid="chat-tab-new"
                 data-tauri-drag-region="false"
                 onClick={() => void handleNewChat()}
                 className="ml-1 flex h-8 w-8 shrink-0 !cursor-default items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors duration-150 hover:border-border hover:bg-muted hover:text-foreground focus-visible:border-border focus-visible:bg-muted focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
