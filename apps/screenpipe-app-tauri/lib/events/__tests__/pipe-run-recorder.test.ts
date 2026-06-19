@@ -107,12 +107,15 @@ describe("pipe-run-recorder: finalize on terminal event", () => {
     expect(saveSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("skips conversations with no assistant content", async () => {
-    // Only raw_line events — parser falls back to cleanPipeStdout but
-    // produces no real assistant content.
+  it("saves a fallback conversation with no assistant content", async () => {
+    // Artifact-writing pipes can emit only lifecycle/raw events. They still
+    // need a sidebar session so Brain artifacts have a pipe context to open.
     await __testing.inject(env({ type: "raw_line", text: "" }));
     await __testing.inject(env({ type: "agent_end" }));
-    expect(saveSpy).not.toHaveBeenCalled();
+    expect(saveSpy).toHaveBeenCalledTimes(1);
+    const arg = saveSpy.mock.calls[0]![0] as any;
+    expect(arg.kind).toBe("pipe-run");
+    expect(arg.messages[0].content).toContain("no assistant transcript");
   });
 
   it("treats turn_end as a terminal event", async () => {

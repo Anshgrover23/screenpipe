@@ -109,10 +109,13 @@ const artifactRows = () =>
   screen.queryAllByTestId(/^brain-item-artifact-/);
 
 describe("BrainSection type filter", () => {
-  it("'all' shows memories and artifacts interleaved", async () => {
+  it("defaults to the memories tab", async () => {
     render(<BrainSection />);
     await waitFor(() => expect(memoryRows().length).toBe(8));
-    await waitFor(() => expect(artifactRows().length).toBe(5));
+    expect(artifactRows().length).toBe(0);
+    expect(
+      screen.getByText(/durable facts, people, preferences/i),
+    ).toBeTruthy();
   });
 
   it("'artifacts' hides every memory row", async () => {
@@ -125,8 +128,9 @@ describe("BrainSection type filter", () => {
     expect(memoryRows().length).toBe(0);
   });
 
-  it("'memories' hides every artifact row", async () => {
+  it("'memories' hides every artifact row after visiting artifacts", async () => {
     render(<BrainSection />);
+    fireEvent.click(screen.getAllByTestId("brain-filter-artifacts")[0]);
     await waitFor(() => expect(artifactRows().length).toBeGreaterThan(0));
 
     fireEvent.click(screen.getAllByTestId("brain-filter-memories")[0]);

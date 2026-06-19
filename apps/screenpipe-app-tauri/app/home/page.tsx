@@ -782,8 +782,21 @@ function HomeContent() {
   useEffect(() => {
     const handler = () => setActiveSection("home");
     window.addEventListener("try-in-chat", handler);
-    return () => window.removeEventListener("try-in-chat", handler);
+    window.addEventListener("show-chat", handler);
+    return () => {
+      window.removeEventListener("try-in-chat", handler);
+      window.removeEventListener("show-chat", handler);
+    };
   }, [setActiveSection]);
+
+  useEffect(() => {
+    const handler = () => {
+      setActiveSection("home");
+      startNewChat();
+    };
+    window.addEventListener("new-chat", handler);
+    return () => window.removeEventListener("new-chat", handler);
+  }, [setActiveSection, startNewChat]);
 
   const renderMainSection = () => {
     if (isSectionHidden(activeSection) && activeSection !== "help") {

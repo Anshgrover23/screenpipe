@@ -308,9 +308,9 @@ describe("Brain section", function () {
     );
     expect(await memItem2.isExisting()).toBe(false);
 
-    // Reset to all
-    const allFilter = await $('[data-testid="brain-filter-all"]');
-    await allFilter.click();
+    // Reset to memories
+    const memFilterAgain = await $('[data-testid="brain-filter-memories"]');
+    await memFilterAgain.click();
     await browser.pause(500);
   });
 
@@ -754,9 +754,9 @@ describe("Brain section", function () {
       "markdown content for preview testing",
     );
 
-    // Reset filter to all
-    const allFilter = await $('[data-testid="brain-filter-all"]');
-    await allFilter.click();
+    // Reset filter to memories
+    const memFilter = await $('[data-testid="brain-filter-memories"]');
+    await memFilter.click();
     await browser.pause(500);
   });
 });

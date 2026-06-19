@@ -193,14 +193,17 @@ async function finalizeBuffer(sid: string, buf: PipeRunBuffer): Promise<void> {
   const ndjson = buf.lines.join("\n");
   const messages: ChatMessage[] = parsePipeNdjsonToMessages(ndjson);
 
-  // Skip empty conversations — pipes that emitted no parseable
-  // assistant content (e.g. raw_line-only streams that the parser
-  // can't summarize). Avoids cluttering the sidebar with empty rows.
-  if (messages.length === 0) return;
+  // Some artifact-writing pipes emit only lifecycle/raw stdout events, so the
+  // parser has no assistant text to reconstruct. Persist a minimal run anyway:
+  // otherwise the artifact exists in Brain but its pipe-run context never
+  // appears in the sidebar, and artifact clicks can fall back into whichever
+  // chat happens to be active.
   const hasAssistantContent = messages.some(
     (m) => m.role === "assistant" && m.content && m.content.trim() !== "",
   );
-  if (!hasAssistantContent) return;
+  if (!hasAssistantContent) {
+    messages.push(fallbackPipeRunMessage(buf));
+  }
 
   const conv: ChatConversation = {
     id: sid,
@@ -242,6 +245,17 @@ async function finalizeBuffer(sid: string, buf: PipeRunBuffer): Promise<void> {
   } catch (e) {
     console.warn("[pipe-run-recorder] sidebar upsert failed for", sid, e);
   }
+}
+
+function fallbackPipeRunMessage(buf: PipeRunBuffer): ChatMessage {
+  return {
+    id: `pipe-run-${buf.executionId}-summary`,
+    role: "assistant",
+    content:
+      `pipe ${buf.pipeName} finished. no assistant transcript was captured for this run, ` +
+      "but any generated outputs are available in brain artifacts.",
+    timestamp: buf.lastEventAt,
+  };
 }
 
 // Test-only helpers — exported under a clearly-scoped namespace so
