@@ -104,11 +104,16 @@ async fn handle_focus(
         payload.args, payload.deep_link_url, payload.target
     );
 
-    if payload.target.as_deref() == Some("browser_pairing") || payload.deep_link_url.is_none() {
-        let _ = (ShowRewindWindow::Home { page: None }).show(&state.app_handle);
-    } else {
-        show_main_window(state.app_handle.clone());
-    }
+    let should_show_home =
+        payload.target.as_deref() == Some("browser_pairing") || payload.deep_link_url.is_none();
+    let app_for_focus = state.app_handle.clone();
+    let _ = state.app_handle.run_on_main_thread(move || {
+        if should_show_home {
+            let _ = (ShowRewindWindow::Home { page: None }).show(&app_for_focus);
+        } else {
+            show_main_window(app_for_focus.clone());
+        }
+    });
 
     if let Some(url) = payload.deep_link_url {
         let _ = state.app_handle.emit("deep-link-received", url);
