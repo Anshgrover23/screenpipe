@@ -900,6 +900,40 @@ export function StandaloneChat({
     turnIntentLedgerRef,
   });
 
+  const openInlineConnectionCard = useCallback((connectionId: string) => {
+    if (connectionId === "connections") {
+      openConnectionSetup(connectionId);
+      return;
+    }
+
+    const connection = allConnectionItems.find((item) => item.id === connectionId);
+    const connectionName = connection?.name || connectionId;
+    const message: Message = {
+      id: `connection-action-${connectionId}-${Date.now()}`,
+      role: "assistant",
+      content: "",
+      timestamp: Date.now(),
+      contentBlocks: [
+        {
+          type: "connection_action",
+          connectionId,
+          connectionName,
+          icon: connection?.icon || connectionId,
+          description: connection?.description,
+        },
+      ],
+    };
+
+    setMessages((prev) => {
+      const alreadyVisible = prev.some((row) =>
+        row.contentBlocks?.some(
+          (block) => block.type === "connection_action" && block.connectionId === connectionId,
+        ),
+      );
+      return alreadyVisible ? prev : [...prev, message];
+    });
+  }, [allConnectionItems, openConnectionSetup]);
+
   usePiForegroundEvents({
     activePreset,
     buildProviderConfig,
@@ -1021,6 +1055,8 @@ export function StandaloneChat({
     sendMessage,
     openFilePreview,
     branchConversation,
+    connectionItems: allConnectionItems,
+    onOpenConnectionSetup: openConnectionSetup,
     scheduleMessage: (message, displayLabel) => {
       piMessageIdRef.current = null;
       sendMessage(message, displayLabel);
@@ -1132,7 +1168,7 @@ export function StandaloneChat({
         }}
         summaryCardsProps={{
           onSendMessage: sendMessage,
-          onOpenConnection: openConnectionSetup,
+          onOpenConnection: openInlineConnectionCard,
           connectionSetupSuggestions,
           autoSuggestions: connectionAwareSuggestions,
           suggestionsRefreshing,
