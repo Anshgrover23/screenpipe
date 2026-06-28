@@ -33,6 +33,7 @@ import {
   buildInvalidatedAuthTokenMessage,
 } from "@/lib/chat/auth-errors";
 import { usePipes } from "@/lib/hooks/use-pipes";
+import { connectInlineConnection, type InlineConnectStatus } from "@/lib/connections/inline-connect";
 import {
   computeChatCitationPlan,
 } from "@/lib/source-citations";
@@ -936,6 +937,25 @@ export function StandaloneChat({
     });
   }, [allConnectionItems, openConnectionSetup]);
 
+  const connectFromInlineCard = useCallback(async (connectionId: string): Promise<InlineConnectStatus> => {
+    const connection = allConnectionItems.find((item) => item.id === connectionId);
+    if (!connection) {
+      openConnectionSetup(connectionId);
+      return { status: "unsupported", reason: "opening setup for this connection" };
+    }
+
+    const result = await connectInlineConnection(connection);
+    if (result.status === "connected") {
+      await refreshConnectionState();
+      return result;
+    }
+    if (result.status === "unsupported") {
+      openConnectionSetup(connectionId);
+      return { status: "unsupported", reason: `${result.reason}; opened setup` };
+    }
+    return result;
+  }, [allConnectionItems, openConnectionSetup, refreshConnectionState]);
+
   usePiForegroundEvents({
     activePreset,
     buildProviderConfig,
@@ -1059,6 +1079,7 @@ export function StandaloneChat({
     branchConversation,
     connectionItems: allConnectionItems,
     onOpenConnectionSetup: openConnectionSetup,
+    onConnectConnectionAction: connectFromInlineCard,
     scheduleMessage: (message, displayLabel) => {
       piMessageIdRef.current = null;
       sendMessage(message, displayLabel);
