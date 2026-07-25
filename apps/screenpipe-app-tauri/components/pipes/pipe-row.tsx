@@ -25,6 +25,21 @@ export const PIPE_ROW_HEIGHT = 58;
 
 const ROW_PADDING_Y = 12;
 
+/**
+ * Hover/focus reveal, done in CSS only.
+ *
+ * Two hundred rows cannot each own a `useState(hovered)` — that is a re-render
+ * per row per pointer move and it makes `React.memo` pointless. `group-hover`
+ * plus `group-focus-within` gets the pointer *and* the keyboard for free, and
+ * because the element stays mounted (opacity, never a conditional) nothing
+ * reflows when it appears.
+ */
+const HOVER_REVEAL_CLASS =
+  "opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100";
+
+/** Execution statuses the row must show without being hovered first. */
+const FAILURE_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
+
 export interface PipeRowProps {
   name: string;
   enabled: boolean;
@@ -67,10 +82,20 @@ export interface PipeRowProps {
 }
 
 /**
- * One pipe in the list. No separators and no hover-revealed action strip: the
- * list reads as a column through spacing and hover fill alone, and everything
- * beyond pause/resume lives in the `⋯` menu or the detail panel.
+ * One pipe in the list. No separators and no boxes: the list reads as a column
+ * through spacing and hover fill alone, and everything beyond pause/resume
+ * lives in the `⋯` menu or the detail panel.
  *
+ * At rest a row carries three things — the ring, the name, the schedule line.
+ * The relative time, the empty star and the `⋯` trigger arrive on hover or on
+ * keyboard focus. Three deliberate exceptions ignore hover entirely, because
+ * they are facts you must be able to find by scanning:
+ *   · a failure ("failed 8:51pm") — a red flag you have to hover to see is a
+ *     red flag you never see;
+ *   · a run in progress — spinner, clock and `watch live`;
+ *   · a favourited ★ — the user put it there.
+ *
+
  * Memoized: the page renders this inside a virtualized list and re-renders on
  * every poll, so a row must be free when its own content has not changed.
  */
@@ -109,12 +134,20 @@ function PipeRowImpl({
     ? lifecycleText || formatInProgressMeta(runStartedAt, now)
     : formatLastRunMeta({ ...lastRun, now });
 
+  // Derived, not stateful: the same status string `formatLastRunMeta` reads.
+  const isFailure =
+    !isRunning && FAILURE_STATUSES.has((lastRun.status ?? "").toLowerCase());
+  // "10m ago" is ambient and can wait for a hover; "failed 8:51pm" and a live
+  // run cannot.
+  const metaAlwaysVisible = isRunning || isFailure;
+
   const handleSelect = React.useCallback(() => onSelect(name), [onSelect, name]);
 
   return (
     <div
       data-pipe-row={name}
       data-testid={`pipe-row-${name}`}
+      data-paused={!enabled && !isRunning ? "true" : undefined}
       role="button"
       tabIndex={0}
       aria-pressed={selected}
@@ -126,13 +159,19 @@ function PipeRowImpl({
         }
       }}
       className={cn(
-        // No rules between rows and no box per row — spacing plus the hover
-        // fill carry the list. Sharp corners, per DESIGN.md.
+        // No rules between rows and no box per row — spacing plus a full-width
+        // hover fill carry the list. No outline and no card border: several
+        // passes of this page have been spent taking boxes *off* it. Sharp
+        // corners, per DESIGN.md.
         "group flex w-full items-center gap-3 text-left",
         "cursor-pointer select-none transition-colors duration-150",
-        "hover:bg-accent/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        // Keyboard focus mirrors hover exactly — same fill, same reveal.
+        "hover:bg-accent/40 focus-within:bg-accent/40",
+        "focus:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         selected &&
           "bg-accent/50 shadow-[inset_2px_0_0_0_hsl(var(--foreground))]",
+        // Paused reads at the row level, so the ring does not have to carry
+        // the state on its own.
         !enabled && !isRunning && "opacity-60",
       )}
       style={{
@@ -204,13 +243,16 @@ function PipeRowImpl({
               onToggleFavorite(name);
             }}
             className={cn(
-              // Favourited stars are always on; the rest only appear on row
-              // hover or when the star itself takes focus.
-              "shrink-0 p-0.5 transition-opacity duration-150",
+              // A filled ★ is a thing the user chose, so it stays. Only the
+              // empty outline is hover-only.
+              "shrink-0 p-0.5",
               "transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               isFavorite
-                ? "text-foreground opacity-100"
-                : "text-muted-foreground/60 opacity-0 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100",
+                ? "text-foreground opacity-100 transition-opacity duration-150"
+                : cn(
+                    "text-muted-foreground/60 hover:text-foreground focus-visible:opacity-100",
+                    HOVER_REVEAL_CLASS,
+                  ),
             )}
           >
             <Star className={cn("h-3.5 w-3.5", isFavorite && "fill-foreground")} />
@@ -218,8 +260,17 @@ function PipeRowImpl({
         )}
 
         <span
-          data-testid={isRunning ? `pipe-row-progress-${name}` : undefined}
-          className="max-w-[220px] truncate text-right font-mono text-[11.5px] text-muted-foreground"
+          data-testid={
+            isRunning ? `pipe-row-progress-${name}` : `pipe-row-meta-${name}`
+          }
+          data-always-visible={metaAlwaysVisible ? "true" : undefined}
+          className={cn(
+            "max-w-[220px] truncate text-right font-mono text-[11.5px]",
+            // Failures speak in the body colour, not a muted one — the whole
+            // point of keeping them on screen is that they read at a glance.
+            isFailure ? "text-foreground" : "text-muted-foreground",
+            metaAlwaysVisible ? "opacity-100" : HOVER_REVEAL_CLASS,
+          )}
         >
           {meta}
           {isRunning && runStartedAt ? ` · ${formatElapsedClock(runStartedAt, now)}` : ""}
@@ -239,7 +290,24 @@ function PipeRowImpl({
           </button>
         )}
 
-        {menu}
+        {/* The `⋯` trigger is hover-only, but its box is always in the layout:
+            mounting it on hover would shift the meta column sideways under the
+            pointer. */}
+        {menu && (
+          <span
+            data-testid={`pipe-row-menu-slot-${name}`}
+            className={cn(
+              "flex shrink-0 items-center",
+              HOVER_REVEAL_CLASS,
+              // Radix moves focus into the portalled menu, which is outside
+              // this row — without this the trigger would fade out from under
+              // its own open dropdown.
+              "[&:has([data-state=open])]:opacity-100",
+            )}
+          >
+            {menu}
+          </span>
+        )}
       </div>
     </div>
   );

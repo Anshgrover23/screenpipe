@@ -68,10 +68,15 @@ export interface PipeStatusButtonProps {
 /**
  * The status dot, made the pause/resume control.
  *
- * At rest it is just the dot (filled = active, outline = paused). On hover or
- * keyboard focus it reveals ⏸ / ▶ and a tooltip, so pause is one click from
- * the list instead of two clicks deep in the `⋯` menu — which still carries
- * the same action for discoverability.
+ * At rest it is a **hollow ring** — nothing else. The filled disc it replaces
+ * read as a selected radio button (a control you had already chosen), and two
+ * hundred solid dots down a column is a lot of ink for a fact the row states
+ * in words anyway. Paused-ness is carried by dimming the whole row, so the
+ * ring never has to encode state on its own.
+ *
+ * On hover or keyboard focus the ring reveals ⏸ / ▶ plus a tooltip, so pause
+ * is one click from the list instead of two clicks deep in the `⋯` menu —
+ * which still carries the same action for discoverability.
  *
  * Running pipes render the spinner and are not toggleable here; stopping a run
  * stays in the `⋯` menu where it can't be hit by accident.
@@ -125,26 +130,34 @@ export function PipeStatusButton({
               }}
               onKeyDown={(event) => event.stopPropagation()}
               className={cn(
+                // The 22px box is the hit target, not a second circle: only
+                // the ring below is ever painted.
                 "group/status relative flex h-[22px] w-[22px] shrink-0 items-center justify-center",
-                // The one circle in the design system — a status dot reads as
-                // a dot or it reads as nothing.
-                "rounded-full border border-foreground/40 bg-transparent",
-                "transition-colors duration-150",
-                "hover:border-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                disabled && "cursor-not-allowed opacity-40 hover:border-foreground/40",
+                "border-0 bg-transparent",
+                "focus:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                disabled && "cursor-not-allowed opacity-40",
               )}
             >
               <span
+                data-testid={`pipe-row-ring-${pipeName}`}
+                data-hollow="true"
                 aria-hidden
                 className={cn(
-                  "h-2 w-2 rounded-full border border-foreground transition-opacity duration-150",
-                  enabled ? "bg-foreground" : "bg-transparent opacity-50",
+                  // The one circle in the design system, and it is hollow:
+                  // 1.5px of border, no fill, in either state.
+                  "h-[13px] w-[13px] rounded-full border-[1.5px] border-foreground/60 bg-transparent",
+                  "transition-[opacity,border-color] duration-150",
+                  !disabled &&
+                    "group-hover/status:border-foreground group-focus-visible/status:border-foreground",
+                  // Hand the middle over to the glyph on hover — a ring drawn
+                  // around ⏸ at 13px is two marks fighting for 13 pixels.
                   !disabled &&
                     "group-hover/status:opacity-0 group-focus-visible/status:opacity-0",
                 )}
               />
               {!disabled && (
                 <Icon
+                  data-testid={`pipe-row-glyph-${pipeName}`}
                   aria-hidden
                   className={cn(
                     "absolute h-2.5 w-2.5 text-foreground opacity-0 transition-opacity duration-150",

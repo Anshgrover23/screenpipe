@@ -41,12 +41,12 @@ describe("PipesPageHeader — list mode", () => {
     );
   });
 
-  it("keeps the store button and the split button", () => {
+  it("keeps the community button and the split button", () => {
     render(<PipesPageHeader {...handlers} />);
     expect(screen.getByTestId("pipes-community-btn").textContent).toContain(
-      "browse store",
+      "explore pipes",
     );
-    expect(screen.getByTestId("pipes-new-btn").textContent).toContain("new pipe");
+    expect(screen.getByTestId("pipes-new-btn").textContent).toContain("create");
   });
 
   it("never mounts the notification bell — it is app-global chrome", () => {
@@ -79,6 +79,63 @@ describe("PipesPageHeader — list mode", () => {
   });
 });
 
+describe("PipesPageHeader — the community doorway reads `explore pipes`", () => {
+  it("names the destination, not a shop, and carries the compass", () => {
+    render(<PipesPageHeader {...handlers} />);
+    const store = screen.getByTestId("pipes-community-btn");
+
+    // "store" implied a purchase for free community content.
+    expect(store.textContent).toBe("explore pipes");
+    expect(store.textContent).not.toMatch(/store|shop|buy/i);
+    // …and a bare verb would name the action without the object, so the
+    // object stays: "explore pipes", not "explore".
+    expect(store.textContent!.trim()).not.toBe("explore");
+
+    const icon = store.querySelector("svg");
+    expect(icon).toBeTruthy();
+    expect(icon!.getAttribute("class")).toContain("lucide-compass");
+    expect(icon!.getAttribute("class")).not.toContain("lucide-store");
+  });
+
+  it("uses the same words inside the create menu — one place, one name", async () => {
+    render(<PipesPageHeader {...handlers} />);
+
+    fireEvent.keyDown(screen.getByTestId("pipes-new-menu-btn"), { key: "Enter" });
+    await waitFor(() => expect(screen.getByTestId("pipes-new-community")).toBeTruthy());
+
+    expect(screen.getByTestId("pipes-new-community").textContent).toBe(
+      "explore pipes",
+    );
+    expect(screen.getByTestId("pipes-new-community").textContent).toBe(
+      screen.getByTestId("pipes-community-btn").textContent,
+    );
+  });
+});
+
+describe("PipesPageHeader — the two controls share one height", () => {
+  it("sizes the ghost and both split halves identically: fill is the only difference", () => {
+    render(<PipesPageHeader {...handlers} />);
+
+    const heightOf = (el: Element) =>
+      (el.className as string).match(/(?:^|\s)h-\[?[\w.]+\]?/)?.[0].trim();
+
+    const store = screen.getByTestId("pipes-community-btn");
+    const label = screen.getByTestId("pipes-new-btn");
+    const chevron = screen.getByTestId("pipes-new-menu-btn");
+
+    expect(heightOf(store)).toBe("h-8");
+    expect(heightOf(label)).toBe("h-8");
+    expect(heightOf(chevron)).toBe("h-8");
+    // The imbalance this replaces: a 40px primary beside a 32px ghost.
+    expect(store.className).not.toContain("h-10");
+    expect(label.className).not.toContain("h-10");
+
+    // Emphasis is carried by fill alone now.
+    expect(label.className).toContain("bg-primary");
+    expect(store.className).toContain("bg-transparent");
+  });
+});
+
 describe("PipesPageHeader — the store button is a quiet ghost", () => {
   it("carries no visible border at rest and only a muted surface on hover", () => {
     render(<PipesPageHeader {...handlers} />);
@@ -96,7 +153,7 @@ describe("PipesPageHeader — the store button is a quiet ghost", () => {
   it("is lowercase and fires the community drill-in", () => {
     render(<PipesPageHeader {...handlers} />);
     const store = screen.getByTestId("pipes-community-btn");
-    expect(store.textContent).toBe("browse store");
+    expect(store.textContent).toBe("explore pipes");
     fireEvent.click(store);
     expect(handlers.onOpenCommunity).toHaveBeenCalledTimes(1);
   });
@@ -133,7 +190,7 @@ describe("PipesPageHeader — the split create button", () => {
     const items = screen.getAllByRole("menuitem");
     expect(items).toHaveLength(2);
     const labels = items.map((i) => (i.textContent || "").trim());
-    expect(labels).toEqual(["set up manually", "browse store"]);
+    expect(labels).toEqual(["set up manually", "explore pipes"]);
     expect(labels).not.toContain("describe in chat");
     expect(labels).not.toContain("start from a community pipe");
     expect(screen.queryByTestId("pipes-new-describe")).toBeNull();
@@ -170,7 +227,7 @@ describe("PipesPageHeader — the split create button", () => {
     render(<PipesPageHeader {...handlers} />);
 
     expect(screen.getByTestId("pipes-new-btn").getAttribute("aria-label")).toBe(
-      "new pipe — describe in chat",
+      "create pipe — describe in chat",
     );
     const chevron = screen.getByTestId("pipes-new-menu-btn");
     expect(chevron.getAttribute("aria-label")).toBe("more ways to create a pipe");

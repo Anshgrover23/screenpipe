@@ -25,14 +25,28 @@ import { saveScreenshot } from '../helpers/screenshot-utils.js';
  *                           "pipes-new-btn" (label half) /
  *                           "pipes-new-menu-btn" (chevron half)
  *
- * `+ new pipe` is a SPLIT button: `pipes-new-btn` fires describe-in-chat
+ * `+ create` is a SPLIT button: `pipes-new-btn` fires describe-in-chat
  * directly (no menu), `pipes-new-menu-btn` opens the two-item menu
  * (`pipes-new-manual`, `pipes-new-community`). There is no `pipes-new-describe`
  * item any more — the label *is* that action. The subtitle is always the
  * tagline; counts live only in the filter tabs.
+ *
+ * The community doorway reads `explore pipes` (Compass icon) in BOTH places —
+ * the ghost button and the chevron menu item — and both header controls are
+ * 32px tall, so only fill separates primary from secondary.
+ *
+ * Rows are quiet at rest: only the ring, the name and the schedule line are
+ * painted. `pipe-row-meta-{name}` (relative time), the empty star and
+ * `pipe-row-menu-slot-{name}` (the `⋯` trigger's box) are revealed by CSS on
+ * row hover / focus-within. Failures, live runs and a favourited ★ ignore
+ * hover and are always at full opacity.
  *   pipe-filter-tabs     →  data-testid="pipe-filter-{all|active|paused|starred}"
  *   pipe-row             →  data-testid="pipe-row-{name}" / "pipe-row-progress-{name}" /
+ *                           "pipe-row-meta-{name}" (relative time / failure text) /
+ *                           "pipe-row-menu-slot-{name}" (hover-revealed ⋯ box) /
  *                           "pipe-row-toggle-{name}" / "pipe-row-star-{name}" /
+ *                           "pipe-row-ring-{name}" (hollow ring) /
+ *                           "pipe-row-glyph-{name}" (⏸ / ▶, hover-revealed) /
  *                           "pipe-row-status-{name}" (spinner, while running) /
  *                           "pipe-row-lead-{name}" (leading slot, selection mode)
  *   pipe-actions-menu    →  data-testid="pipe-menu-{name}" / "pipe-menu-run-now" /
@@ -229,11 +243,20 @@ describe('Pipes page: header, filters, detail panel, run now', function () {
 
     const community = await $('[data-testid="pipes-community-btn"]');
     expect(await community.isExisting()).toBe(true);
-    expect((await community.getText()).toLowerCase()).toContain('browse store');
+    // "store" implied a purchase for free community content; the object stays
+    // in the label so the link says where it goes.
+    expect((await community.getText()).toLowerCase()).toContain('explore pipes');
+    expect((await community.getText()).toLowerCase()).not.toContain('store');
 
     const newPipe = await $('[data-testid="pipes-new-btn"]');
     expect(await newPipe.isExisting()).toBe(true);
+    expect((await newPipe.getText()).toLowerCase()).toContain('create');
     expect(await $('[data-testid="pipes-new-menu-btn"]').isExisting()).toBe(true);
+
+    // Both header controls are the same height — emphasis is fill, not size.
+    const communityHeight = (await community.getSize()).height;
+    const newHeight = (await newPipe.getSize()).height;
+    expect(Math.abs(communityHeight - newHeight)).toBeLessThanOrEqual(1);
 
     const filepath = await saveScreenshot('pipes-page-header');
     expect(existsSync(filepath)).toBe(true);
@@ -255,6 +278,11 @@ describe('Pipes page: header, filters, detail panel, run now', function () {
     const items = await $$('[role="menuitem"]');
     expect(items.length).toBe(2);
     expect(await $('[data-testid="pipes-new-describe"]').isExisting()).toBe(false);
+
+    // Both doorways to the community view read identically.
+    expect(
+      (await $('[data-testid="pipes-new-community"]').getText()).toLowerCase(),
+    ).toContain('explore pipes');
 
     await closeAnyMenu();
   });
@@ -457,6 +485,129 @@ describe('Pipes page: header, filters, detail panel, run now', function () {
 
     const filepath = await saveScreenshot('pipes-row-no-separators');
     expect(existsSync(filepath)).toBe(true);
+  });
+
+  /** Computed opacity of one element, or -1 when it is not in the DOM. */
+  async function opacityOf(selector: string): Promise<number> {
+    return (await browser.execute((sel: string) => {
+      const el = document.querySelector(sel);
+      return el ? Number(getComputedStyle(el).opacity) : -1;
+    }, selector)) as number;
+  }
+
+  /** Park the pointer somewhere that is definitely not a row. */
+  async function movePointerAwayFromRows(): Promise<void> {
+    await $('[data-testid="pipes-title"]').moveTo().catch(() => undefined);
+    await browser.pause(250);
+  }
+
+  it('keeps the ⋯ trigger invisible until the row is hovered', async function () {
+    if (!fixtureInstalled) this.skip();
+    await openPipesPage();
+    await waitForFixtureRow();
+
+    const slotSel = `[data-testid="pipe-row-menu-slot-${PIPE_NAME}"]`;
+    const metaSel = `[data-testid="pipe-row-meta-${PIPE_NAME}"]`;
+
+    await movePointerAwayFromRows();
+
+    // At rest the row is three marks: ring, name, schedule line. The `⋯` box
+    // is mounted (so nothing reflows) but fully transparent.
+    expect(await $(slotSel).isExisting()).toBe(true);
+    expect(await opacityOf(slotSel)).toBe(0);
+    expect(await opacityOf(metaSel)).toBe(0);
+
+    const restShot = await saveScreenshot('pipes-row-quiet-at-rest');
+    expect(existsSync(restShot)).toBe(true);
+
+    // Hover reveals both, and the row's geometry does not move.
+    const slotBefore = await $(slotSel).getLocation();
+    await $(`[data-testid="pipe-row-${PIPE_NAME}"]`).moveTo();
+    await browser.waitUntil(async () => (await opacityOf(slotSel)) === 1, {
+      timeout: t(5_000),
+      timeoutMsg: 'hovering the row did not reveal the ⋯ trigger',
+    });
+    expect(await opacityOf(metaSel)).toBe(1);
+
+    const slotAfter = await $(slotSel).getLocation();
+    expect(Math.abs(slotAfter.x - slotBefore.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(slotAfter.y - slotBefore.y)).toBeLessThanOrEqual(1);
+
+    const hoverShot = await saveScreenshot('pipes-row-hover-reveal');
+    expect(existsSync(hoverShot)).toBe(true);
+
+    await movePointerAwayFromRows();
+  });
+
+  it('always shows a failed run on the row — no hover required', async function () {
+    if (!fixtureInstalled) this.skip();
+    await openPipesPage();
+    await waitForFixtureRow();
+
+    // The fixture never really runs, so the list payload is rewritten on the
+    // way in to carry one failed execution for it. Everything else passes
+    // through untouched.
+    await browser.execute((name: string) => {
+      const orig = window.fetch.bind(window);
+      (window as any).__origFetch = orig;
+      window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (!url.includes('/pipes?include_executions=true')) return orig(input, init);
+        const res = await orig(input, init);
+        try {
+          const payload = await res.clone().json();
+          const row = (payload?.data ?? []).find(
+            (p: any) => p?.config?.name === name,
+          );
+          if (row) {
+            row.recent_executions = [
+              {
+                id: 424242,
+                status: 'failed',
+                started_at: new Date(Date.now() - 10 * 60_000).toISOString(),
+                duration_ms: 1234,
+              },
+            ];
+          }
+          return new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        } catch {
+          return res;
+        }
+      };
+    }, PIPE_NAME);
+
+    try {
+      const metaSel = `[data-testid="pipe-row-meta-${PIPE_NAME}"]`;
+      await movePointerAwayFromRows();
+
+      // The list polls every 10s; wait for the doctored payload to land.
+      await browser.waitUntil(
+        async () => /failed/i.test(await $(metaSel).getText().catch(() => '')),
+        {
+          timeout: t(25_000),
+          timeoutMsg: 'the failed run never reached the row meta',
+        },
+      );
+
+      // …and it is legible without the pointer anywhere near the row. A red
+      // flag you must hover to find is a red flag you never find.
+      await movePointerAwayFromRows();
+      expect(await opacityOf(metaSel)).toBe(1);
+      expect(await $(metaSel).getAttribute('data-always-visible')).toBe('true');
+
+      const filepath = await saveScreenshot('pipes-row-failure-always-visible');
+      expect(existsSync(filepath)).toBe(true);
+    } finally {
+      await browser.execute(() => {
+        if ((window as any).__origFetch) {
+          window.fetch = (window as any).__origFetch;
+          delete (window as any).__origFetch;
+        }
+      });
+    }
   });
 
   // ─── Layout: list mode ────────────────────────────────────────────────────

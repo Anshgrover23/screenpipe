@@ -4,7 +4,7 @@
 "use client";
 
 import React from "react";
-import { ChevronDown, Loader2, Plus, Store } from "lucide-react";
+import { ChevronDown, Compass, Loader2, Plus } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,17 +34,26 @@ export interface PipesPageHeaderProps {
 }
 
 /**
+ * Height of every control in the header action row, in px.
+ *
+ * The primary used to be 40px tall beside a 32px ghost. Two controls on one
+ * baseline at different heights read as a layout mistake, not as emphasis —
+ * so both are 32px now and *fill* alone separates primary from secondary.
+ */
+const HEADER_CONTROL_HEIGHT_CLASS = "h-8";
+
+/**
  * Shared by both halves of the split button so the pair reads as one control:
  * same height, same type scale, same hover shift, and — critically — its own
  * focus ring per half rather than one ring drawn around the group.
  */
 const SPLIT_HALF_CLASS =
-  "relative inline-flex h-9 items-center justify-center bg-primary font-mono text-[11.5px] uppercase tracking-wider text-primary-foreground transition-colors duration-150 hover:bg-primary/90 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50";
+  `relative inline-flex ${HEADER_CONTROL_HEIGHT_CLASS} items-center justify-center bg-primary font-mono text-[11.5px] uppercase tracking-wider text-primary-foreground transition-colors duration-150 hover:bg-primary/90 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50`;
 
 /**
- * The one header of the pipes page — no tabs. `+ new pipe` is a split button:
+ * The one header of the pipes page — no tabs. `+ create` is a split button:
  * the label fires the default (describe in chat) in one click, the chevron
- * opens the rarer ways in. Browsing the store is deliberately a ghost button —
+ * opens the rarer ways in. `explore pipes` is deliberately a ghost button —
  * it is the secondary action, so only the split button reads as primary.
  */
 export function PipesPageHeader({
@@ -60,17 +69,26 @@ export function PipesPageHeader({
     <div className="flex shrink-0 items-center gap-2">
       {actions}
       {/* Secondary action, so it carries no border at rest: two outlined
-          buttons side by side made "browse store" compete with creation for
-          the eye. It only picks up a surface on hover. List mode only. */}
+          buttons side by side made this doorway compete with creation for the
+          eye. It only picks up a surface on hover. List mode only.
+
+          Copy: "store" implied purchase for content that is free and
+          community-written. A bare verb ("explore") would name the action but
+          not the destination, so the object stays in the label — NN/G,
+          *Better Link Labels*. Same wording in the `+ create` menu below, so
+          both doorways to the same place read identically. */}
       {!compact && (
         <button
           type="button"
           data-testid="pipes-community-btn"
           onClick={onOpenCommunity}
-          className="inline-flex h-9 shrink-0 items-center gap-1.5 border border-transparent bg-transparent px-3 font-mono text-[11.5px] lowercase tracking-wider text-muted-foreground transition-colors duration-150 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+          className={cn(
+            HEADER_CONTROL_HEIGHT_CLASS,
+            "inline-flex shrink-0 items-center gap-1.5 border border-transparent bg-transparent px-3 font-mono text-[11.5px] lowercase tracking-wider text-muted-foreground transition-colors duration-150 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+          )}
         >
-          <Store className="h-3.5 w-3.5" />
-          browse store
+          <Compass className="h-3.5 w-3.5" />
+          explore pipes
         </button>
       )}
 
@@ -84,7 +102,7 @@ export function PipesPageHeader({
         <button
           type="button"
           data-testid="pipes-new-btn"
-          aria-label="new pipe — describe in chat"
+          aria-label="create pipe — describe in chat"
           onClick={onDescribeInChat}
           className={cn(SPLIT_HALF_CLASS, "shrink-0 gap-1.5 px-3.5")}
         >
@@ -93,7 +111,11 @@ export function PipesPageHeader({
           ) : (
             <Plus className="h-3 w-3" />
           )}
-          {compact ? "new" : "new pipe"}
+          {/* The page is titled "pipes" and every menu item below says what
+              kind of thing you get, so the noun in "+ new pipe" was the third
+              time the word appeared in one corner. Compact keeps the shorter
+              label — there is no room for either word plus the filters. */}
+          {compact ? "new" : "create"}
         </button>
 
         {/* 1px divider, visible at rest — the seam is what tells you the
@@ -132,7 +154,7 @@ export function PipesPageHeader({
               className="text-[13px]"
               onClick={onOpenCommunity}
             >
-              browse store
+              explore pipes
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
