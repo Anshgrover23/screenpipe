@@ -41,6 +41,8 @@ import {
   formatClock,
   formatElapsedClock,
   formatRunRow,
+  type PipeDraftRequirement,
+  type PipeDraftRequirementKey,
 } from "./pipes-page-logic";
 
 export interface PanelExecution {
@@ -72,6 +74,19 @@ export interface PipeDetailPanelProps {
   chatRunCount: number;
   /** live lifecycle text for the in-flight run ("queued — waking the agent…") */
   lifecycleText?: string | null;
+
+  /**
+   * One-line strip pinned at the top of the pane right after a manual create
+   * — `created · next run 3:14pm · run now`. Replaces the toast the old blank
+   * pipe fired: the confirmation belongs where the thing it confirms is.
+   */
+  createdStrip?: React.ReactNode;
+  /**
+   * Why this pipe is paused, inline — a freshly created pipe whose required
+   * connections aren't configured is created paused, and the pane says so
+   * rather than the list growing a new global "blocked" status.
+   */
+  blockedNote?: React.ReactNode;
 
   // prompt (pipe.md body)
   bodyValue: string;
@@ -190,6 +205,8 @@ export function PipeDetailPanel(props: PipeDetailPanelProps) {
     enterpriseManaged,
     chatRunCount,
     lifecycleText,
+    createdStrip,
+    blockedNote,
     bodyValue,
     onBodyChange,
     saveState,
@@ -460,6 +477,25 @@ export function PipeDetailPanel(props: PipeDetailPanelProps) {
         className="min-h-0 flex-1 space-y-[26px] overflow-y-auto overscroll-contain p-5 [scrollbar-gutter:stable]"
         style={scrollFadeStyle(scrollFade)}
       >
+        {/* just-created confirmation + the reason it is paused, if it is. Both
+            are one-line strips, not cards: they are a receipt, not a section. */}
+        {createdStrip != null && (
+          <p
+            data-testid="pipe-detail-created-strip"
+            className="-mb-[14px] flex flex-wrap items-center gap-1.5 text-[12.5px] text-muted-foreground"
+          >
+            {createdStrip}
+          </p>
+        )}
+        {blockedNote != null && (
+          <p
+            data-testid="pipe-detail-blocked-note"
+            className="-mb-[14px] flex flex-wrap items-center gap-1.5 text-[12.5px] text-destructive"
+          >
+            {blockedNote}
+          </p>
+        )}
+
         {/* prompt — no caption. It is the first thing under the pipe's name and
             the pane's primary content; a "PROMPT" label above it only repeats
             what the block obviously is. */}
@@ -721,6 +757,384 @@ export function PipeDetailPanel(props: PipeDetailPanelProps) {
 
         {/* advanced — last, by design */}
         {advancedSection}
+      </div>
+    </aside>
+  );
+}
+
+/**
+ * The intervals a draft can pick before it exists. Deliberately short: the
+ * full trigger builder needs a pipe on disk to talk to, and a draft that has
+ * to choose between 14 recurrence shapes before it can be created is not a
+ * quick manual setup. Everything else is one `edit` away once it's saved.
+ */
+export const PIPE_DRAFT_SCHEDULES = [
+  "every 15m",
+  "every 30m",
+  "every 1h",
+  "every 2h",
+  "every 6h",
+  "every 12h",
+  "daily",
+  "manual",
+] as const;
+
+export interface PipeDraftPanelProps {
+  name: string;
+  onNameChange: (value: string) => void;
+
+  /** the id this pipe will get — derived from the name, or hand-picked */
+  pipeId: string;
+  /** true once the user has edited the id: the derivation link is broken */
+  idIsManual: boolean;
+  onIdEdit: () => void;
+  onIdChange: (value: string) => void;
+  /** inline note under the id — a collision, surfaced the moment it happens */
+  idNote?: React.ReactNode;
+
+  /** never prefilled — the field carries a placeholder, not content */
+  prompt: string;
+  onPromptChange: (value: string) => void;
+
+  presetSlot: React.ReactNode;
+  connectionsSlot: React.ReactNode;
+  connectionsAddSlot?: React.ReactNode;
+
+  schedule: string;
+  onScheduleChange: (schedule: string) => void;
+  notificationsEnabled: boolean;
+  onNotificationsChange: (enabled: boolean) => void;
+
+  /** unmet requirements only — the list empties as they are satisfied */
+  requirements: PipeDraftRequirement[];
+  onRequirementSelect?: (key: PipeDraftRequirementKey) => void;
+
+  creating?: boolean;
+  onCreate: () => void;
+  /** ✕ / Escape / cancel — the caller decides whether to confirm first */
+  onCancel: () => void;
+}
+
+/**
+ * The pane in DRAFT mode — "set up manually" before anything exists.
+ *
+ * Nothing here is on disk: the menu click used to write
+ * `~/.screenpipe/pipes/new-pipe-N/pipe.md` before the user had typed a single
+ * character, which auto-named the pipe for them and left junk behind whenever
+ * they walked away. The draft holds the whole thing in memory until `create`.
+ */
+export function PipeDraftPanel({
+  name,
+  onNameChange,
+  pipeId,
+  idIsManual,
+  onIdEdit,
+  onIdChange,
+  idNote,
+  prompt,
+  onPromptChange,
+  presetSlot,
+  connectionsSlot,
+  connectionsAddSlot,
+  schedule,
+  onScheduleChange,
+  notificationsEnabled,
+  onNotificationsChange,
+  requirements,
+  onRequirementSelect,
+  creating = false,
+  onCreate,
+  onCancel,
+}: PipeDraftPanelProps) {
+  const [scheduleOpen, setScheduleOpen] = React.useState(false);
+  const [showRequirements, setShowRequirements] = React.useState(false);
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  const scrollFade = useScrollFade(scrollRef);
+  const canCreate = requirements.length === 0;
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    // Escape belongs to the draft while it is open — the page-level handler
+    // only closes a SAVED pane, and would otherwise do nothing here.
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onCancel();
+      return;
+    }
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (canCreate && !creating) onCreate();
+    }
+  };
+
+  return (
+    <aside
+      data-testid="pipe-draft-panel"
+      onKeyDown={handleKeyDown}
+      className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col"
+    >
+      {/* Same two-line header as the saved pane, with the name field standing
+          in for the title and only ✕ for company: there is nothing to pause,
+          run or delete yet, so no ⋯ and no pause button. */}
+      <div className="relative z-10 shrink-0 border-b border-border bg-background px-3 pb-2 pt-1.5">
+        <div className="flex items-center gap-2">
+          <span
+            data-testid="pipe-draft-status"
+            className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground"
+          >
+            new pipe
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-none p-0"
+            aria-label="close panel"
+            data-testid="pipe-draft-close"
+            onClick={onCancel}
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+
+        <input
+          data-testid="pipe-draft-name"
+          // The draft exists solely to be named — anything else holding focus
+          // would steal the first keystroke.
+          autoFocus
+          value={name}
+          onChange={(event) => onNameChange(event.target.value)}
+          placeholder="pipe name"
+          aria-label="pipe name"
+          spellCheck={false}
+          autoCorrect="off"
+          className="w-full border-0 bg-transparent p-0 text-[17px] font-medium leading-tight text-foreground outline-none placeholder:text-muted-foreground/60 focus:outline-none focus-visible:outline-none"
+        />
+
+        {/* The id is a consequence of the name, so it reads as a caption under
+            it — until the user takes it over, at which point it becomes a
+            field and stops following the name. */}
+        <div className="mt-1 flex items-center gap-2">
+          {idIsManual ? (
+            <input
+              data-testid="pipe-draft-id"
+              value={pipeId}
+              onChange={(event) => onIdChange(event.target.value)}
+              aria-label="pipe id"
+              spellCheck={false}
+              autoCorrect="off"
+              className="min-w-0 flex-1 border-b border-border bg-transparent p-0 font-mono text-[11.5px] text-muted-foreground outline-none focus:border-foreground/40 focus:outline-none"
+            />
+          ) : (
+            <>
+              <span
+                data-testid="pipe-draft-id"
+                className="min-w-0 truncate font-mono text-[11.5px] text-muted-foreground"
+              >
+                id: {pipeId}
+              </span>
+              <button
+                type="button"
+                data-testid="pipe-draft-id-edit"
+                onClick={onIdEdit}
+                className="shrink-0 text-[11.5px] text-muted-foreground underline underline-offset-2 transition-colors duration-150 hover:text-foreground"
+              >
+                edit
+              </button>
+            </>
+          )}
+        </div>
+        {idNote != null && (
+          <p
+            data-testid="pipe-draft-id-note"
+            className="mt-1 text-[11.5px] text-muted-foreground"
+          >
+            {idNote}
+          </p>
+        )}
+      </div>
+
+      <div
+        ref={scrollRef}
+        data-testid="pipe-draft-scroll"
+        className="min-h-0 flex-1 space-y-[26px] overflow-y-auto overscroll-contain p-5 [scrollbar-gutter:stable]"
+        style={scrollFadeStyle(scrollFade)}
+      >
+        {/* A PLACEHOLDER, never content: the old flow wrote "describe what this
+            pipe should do each run." into the body, so an untouched pipe
+            shipped that sentence to the model as its instructions. */}
+        <section data-testid="pipe-draft-prompt">
+          <Textarea
+            value={prompt}
+            onChange={(event) => onPromptChange(event.target.value)}
+            placeholder="describe what this pipe should do each run."
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            aria-label="pipe prompt"
+            className="h-44 resize-none rounded-none border border-border bg-muted/20 px-4 py-3.5 text-[13.5px] leading-[1.65]"
+          />
+        </section>
+
+        <SettingsGroup label="details">
+          <SettingsRow label="ai model" testId="pipe-draft-preset-row">
+            <div
+              data-testid="pipe-draft-preset"
+              className="flex min-w-0 items-center justify-end"
+            >
+              {presetSlot}
+            </div>
+          </SettingsRow>
+          <SettingsRow label="connections" testId="pipe-draft-connections-row">
+            <div
+              data-testid="pipe-draft-connections"
+              className="flex min-w-0 flex-wrap items-center justify-end gap-2"
+            >
+              {connectionsSlot}
+              {connectionsAddSlot != null && (
+                <>
+                  <span aria-hidden className="text-[12px] text-muted-foreground/50">
+                    ·
+                  </span>
+                  {connectionsAddSlot}
+                </>
+              )}
+            </div>
+          </SettingsRow>
+        </SettingsGroup>
+
+        <SettingsGroup label="frequency">
+          {scheduleOpen ? (
+            <SettingsCell data-testid="pipe-draft-schedule-editor">
+              <div className="flex items-center justify-between gap-3">
+                <Select
+                  value={schedule}
+                  onValueChange={(value) => onScheduleChange(value)}
+                >
+                  <SelectTrigger
+                    data-testid="pipe-draft-schedule-select"
+                    aria-label="when to run"
+                    className={SETTINGS_SELECT_TRIGGER_CLASS}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="rounded-none">
+                    {PIPE_DRAFT_SCHEDULES.map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {option}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  data-testid="pipe-draft-schedule-done"
+                  className="h-7 rounded-none px-2 text-[12px]"
+                  onClick={() => setScheduleOpen(false)}
+                >
+                  done
+                </Button>
+              </div>
+            </SettingsCell>
+          ) : (
+            <SettingsRow
+              label="when to run"
+              testId="pipe-draft-schedule-row"
+              onClick={() => setScheduleOpen(true)}
+            >
+              <SettingsRowAction data-testid="pipe-draft-schedule-summary">
+                <span className="truncate">{schedule}</span>
+                <span className="underline underline-offset-2">edit</span>
+              </SettingsRowAction>
+            </SettingsRow>
+          )}
+          <SettingsRow label="notifications" htmlFor="pipe-draft-notifications">
+            <Select
+              value={notificationsEnabled ? "all" : "off"}
+              onValueChange={(value) => onNotificationsChange(value === "all")}
+            >
+              <SelectTrigger
+                id="pipe-draft-notifications"
+                data-testid="pipe-draft-notifications"
+                className={SETTINGS_SELECT_TRIGGER_CLASS}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="rounded-none">
+                <SelectItem value="all">all runs</SelectItem>
+                <SelectItem value="off">off</SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+        </SettingsGroup>
+      </div>
+
+      {/* Pinned footer — the two things you can do with a draft never scroll
+          out of reach, however long the prompt gets. */}
+      <div className="relative z-10 shrink-0 border-t border-border bg-background px-3 py-2">
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            data-testid="pipe-draft-cancel"
+            className="h-8 rounded-none px-3 text-[12.5px]"
+            onClick={onCancel}
+          >
+            cancel
+          </Button>
+
+          {/* The disabled button can't emit pointer events itself, so the
+              wrapper carries them — that is what makes the requirement list
+              reachable at all when create is blocked. */}
+          <span
+            className="relative"
+            onPointerEnter={() => setShowRequirements(true)}
+            onPointerLeave={() => setShowRequirements(false)}
+            onFocusCapture={() => setShowRequirements(true)}
+            onBlurCapture={() => setShowRequirements(false)}
+          >
+            {!canCreate && showRequirements && (
+              <div
+                role="tooltip"
+                id="pipe-draft-requirements"
+                data-testid="pipe-draft-requirements"
+                className="absolute bottom-full right-0 z-20 mb-2 w-56 border border-border bg-background p-2.5 text-left shadow-sm"
+              >
+                <p className="text-[11.5px] text-muted-foreground">
+                  complete these requirements:
+                </p>
+                <ul className="mt-1.5 space-y-1">
+                  {requirements.map((requirement) => (
+                    <li key={requirement.key}>
+                      <button
+                        type="button"
+                        data-testid={`pipe-draft-requirement-${requirement.key}`}
+                        onClick={() => onRequirementSelect?.(requirement.key)}
+                        className="text-left text-[12.5px] text-foreground underline underline-offset-2 transition-colors duration-150 hover:text-muted-foreground"
+                      >
+                        {requirement.label}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <Button
+              size="sm"
+              data-testid="pipe-draft-create"
+              aria-describedby={
+                !canCreate && showRequirements ? "pipe-draft-requirements" : undefined
+              }
+              className="h-8 rounded-none px-3.5 text-[12.5px]"
+              disabled={!canCreate || creating}
+              onClick={onCreate}
+            >
+              {creating && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+              create
+            </Button>
+          </span>
+        </div>
       </div>
     </aside>
   );

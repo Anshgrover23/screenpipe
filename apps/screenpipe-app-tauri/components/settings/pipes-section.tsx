@@ -121,7 +121,10 @@ import {
   type PipeRowViewModel,
 } from "@/components/pipes/pipe-row-view-model";
 import { PipeActionsMenu } from "@/components/pipes/pipe-actions-menu";
-import { PipeDetailPanel } from "@/components/pipes/pipe-detail-panel";
+import {
+  PipeDetailPanel,
+  PipeDraftPanel,
+} from "@/components/pipes/pipe-detail-panel";
 import { SETTINGS_SELECT_TRIGGER_CLASS } from "@/components/ui/settings-group";
 import { PipeSuggestions } from "@/components/pipes/pipe-suggestions";
 import { PipesSplitView } from "@/components/pipes/pipes-split-view";
@@ -130,16 +133,59 @@ import { usePipeNextRuns } from "@/components/pipes/use-pipe-next-runs";
 import { openPipeChat } from "@/components/pipes/open-pipe-chat";
 import { startCreatePipeInChat } from "@/components/pipes/create-pipe-in-chat";
 import {
+  buildPipeDraftMd,
   countActivePipes,
+  derivePipeId,
+  draftMissingConnections,
+  emptyPipeDraft,
   filterPipesByStatus,
+  formatClock,
+  isPipeDraftDirty,
   lifecyclePhaseFromEventType,
   lifecycleStatusText,
   parseRunResponse,
+  pipeDraftRequirements,
   replacePipeBody,
   splitPipeMd,
+  writePipeDraft,
+  type PipeDraftRequirementKey,
+  type PipeDraftState,
   type PipeLifecyclePhase,
   type PipeStatusFilter,
 } from "@/components/pipes/pipes-page-logic";
+import { pickPipePreset } from "@/lib/utils/pick-pipe-preset";
+
+/**
+ * Where an in-progress draft is mirrored so an accidental reload mid-typing
+ * doesn't throw the pipe away. Session-scoped on purpose: a draft is not a
+ * document, it is one sitting.
+ */
+const PIPE_DRAFT_SESSION_KEY = "pipes:manual-draft";
+
+function readStoredPipeDraft(): PipeDraftState | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(PIPE_DRAFT_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PipeDraftState>;
+    if (typeof parsed?.name !== "string" || typeof parsed?.prompt !== "string") {
+      return null;
+    }
+    return { ...emptyPipeDraft(), ...parsed } as PipeDraftState;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredPipeDraft(draft: PipeDraftState | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (!draft) sessionStorage.removeItem(PIPE_DRAFT_SESSION_KEY);
+    else sessionStorage.setItem(PIPE_DRAFT_SESSION_KEY, JSON.stringify(draft));
+  } catch {
+    // sessionStorage unavailable — the draft just won't survive a reload.
+  }
+}
 
 const PIPE_EXECUTIONS_PAGE_LIMIT = 10;
 
@@ -1079,6 +1125,42 @@ export function PipesSection({
   // "queued — waking the agent…" → "starting agent…" → first token = running.
   const [runLifecycle, setRunLifecycle] = useState<Record<string, PipeLifecyclePhase>>({});
   const [creatingPipe, setCreatingPipe] = useState(false);
+
+  // ── manual draft ─────────────────────────────────────────────────────────
+  // "set up manually" opens a pane-shaped DRAFT. Nothing is written until
+  // `create`, so abandoning it leaves nothing on disk. Seeded from
+  // sessionStorage so a reload mid-typing doesn't lose it.
+  const [draft, setDraftState] = useState<PipeDraftState | null>(() =>
+    readStoredPipeDraft(),
+  );
+  /** true once the user takes the id over — see PipeDraftState.manualId */
+  const [draftCreating, setDraftCreating] = useState(false);
+  /** pending close: the action to run once the user confirms the discard */
+  const [discardConfirm, setDiscardConfirm] = useState<{
+    next: (() => void) | null;
+  } | null>(null);
+  /** the just-created pipe, so the saved pane can show its one-line receipt */
+  const [createdNotice, setCreatedNotice] = useState<{
+    name: string;
+    missing: string[];
+  } | null>(null);
+  const draftRef = useRef<PipeDraftState | null>(draft);
+  draftRef.current = draft;
+  /** Every draft mutation goes through here, so the mirror can never drift. */
+  const setDraft = useCallback((next: PipeDraftState | null) => {
+    draftRef.current = next;
+    setDraftState(next);
+    writeStoredPipeDraft(next);
+  }, []);
+  const patchDraft = useCallback(
+    (patch: Partial<PipeDraftState>) => {
+      const current = draftRef.current;
+      if (!current) return;
+      setDraft({ ...current, ...patch });
+    },
+    [setDraft],
+  );
+
   // Single create-pipe entry point shared by the create box and the example
   // chips. Marks the generation attempt (so standalone-chat can fire
   // `pipe_generation_completed` when a new pipe lands), captures the north-star
@@ -2046,63 +2128,131 @@ export function PipesSection({
     }
   };
 
-  /** Open (or close) the right-side detail panel for a pipe. */
-  const selectPipe = (name: string) => {
+  const openPipePanel = (name: string) => {
     if (expanded === name) {
       setExpanded(null);
       expandedRef.current = null;
       return;
     }
     posthog.capture("pipe_panel_opened", { pipe: name });
+    setCreatedNotice((prev) => (prev && prev.name === name ? prev : null));
     setExpanded(name);
     expandedRef.current = name;
     fetchLogs(name);
     fetchExecutions(name);
   };
 
+  /**
+   * Open (or close) the right-side detail panel for a pipe. An open draft is
+   * asked about first — selecting another pipe is a way of walking away from
+   * a pipe that has not been created yet.
+   */
+  const selectPipe = (name: string) => {
+    if (draftRef.current) {
+      requestCloseDraft(() => openPipePanel(name));
+      return;
+    }
+    openPipePanel(name);
+  };
+
   const closePanel = () => {
     setExpanded(null);
     expandedRef.current = null;
+    setCreatedNotice(null);
+  };
+
+  // ── the manual draft ──────────────────────────────────────────────────────
+
+  /** The preset a new pipe should run on: the dedicated pipes one, else the
+   *  user's default. `null` only when the user has no presets at all. */
+  const defaultPipePresetId =
+    pickPipePreset((settings.aiPresets as { id?: string; defaultPreset?: boolean; model?: string }[]) ?? [])
+      ?.id ?? null;
+
+  /** Discard the draft outright and run whatever the user was heading for. */
+  const discardDraft = (next?: (() => void) | null) => {
+    setDraft(null);
+    setDraftCreating(false);
+    next?.();
   };
 
   /**
-   * "set up manually" — write a minimal pipe.md and open its panel. Same
-   * filesystem path the team-pipe fork uses, so the engine picks it up on the
-   * next poll without a dedicated create endpoint.
+   * Close the draft — silently when it is untouched, with a confirmation when
+   * it is not. Returns true when the draft is already gone.
    */
-  const createBlankPipe = async () => {
-    if (creatingPipe) return;
+  const requestCloseDraft = (next?: (() => void) | null): boolean => {
+    if (!draftRef.current) {
+      next?.();
+      return true;
+    }
+    if (isPipeDraftDirty(draftRef.current)) {
+      setDiscardConfirm({ next: next ?? null });
+      return false;
+    }
+    discardDraft(next);
+    return true;
+  };
+
+  /** "set up manually" — opens the draft pane. Writes nothing. */
+  const openManualDraft = () => {
+    if (draftRef.current) return;
+    setExpanded(null);
+    expandedRef.current = null;
+    setCreatedNotice(null);
+    setDraft(emptyPipeDraft(defaultPipePresetId));
+  };
+
+  /**
+   * The one place the manual flow touches the disk. Keeps the client-side
+   * `mkdir` + `writeTextFile` path the old blank pipe used — the engine picks
+   * the new pipe up on its next poll.
+   */
+  const createFromDraft = async () => {
+    const current = draftRef.current;
+    if (!current || draftCreating) return;
+    const id = draftPipeId;
+    if (
+      pipeDraftRequirements({
+        name: current.name,
+        prompt: current.prompt,
+        presetId: current.presetId,
+        idTaken: draftIdTaken,
+      }).length > 0
+    ) {
+      return;
+    }
+
+    setDraftCreating(true);
     setCreatingPipe(true);
     try {
-      const home = await homeDir();
-      const pipesDir = await join(home, ".screenpipe", "pipes");
-      let name = "new-pipe";
-      let i = 1;
-      while (await exists(await join(pipesDir, name))) {
-        i += 1;
-        name = `new-pipe-${i}`;
-      }
-      const dir = await join(pipesDir, name);
-      await mkdir(dir, { recursive: true });
-      await writeTextFile(
-        await join(dir, "pipe.md"),
-        [
-          "---",
-          "schedule: every 1h",
-          "enabled: false",
-          "---",
-          "",
-          "describe what this pipe should do each run.",
-          "",
-        ].join("\n"),
+      // A pipe that declares connections it cannot reach would fail on every
+      // scheduled run — create it paused and say why, rather than let it
+      // churn. Everything else is created ACTIVE.
+      const missing = draftMissingConnections(
+        current.connections,
+        availableConnections,
+        pipeConnectionLookupKey,
       );
-      posthog.capture("pipe_created_manually", { pipe: name });
+      let content = buildPipeDraftMd(current, { enabled: missing.length === 0 });
+      if (!current.notifications) {
+        content = toggleNotificationInContent(content, false);
+      }
+
+      await writePipeDraft(
+        { homeDir, join, exists, mkdir, writeTextFile },
+        id,
+        content,
+      );
+      posthog.capture("pipe_created_manually", { pipe: id });
+
+      setDraft(null);
       await fetchPipes();
-      setExpanded(name);
-      expandedRef.current = name;
-      fetchLogs(name);
-      fetchExecutions(name);
-      toast({ title: `"${name}" created`, description: "paused until you turn it on" });
+      // No toast: the saved pane carries a one-line receipt instead.
+      setCreatedNotice({ name: id, missing });
+      setExpanded(id);
+      expandedRef.current = id;
+      fetchLogs(id);
+      fetchExecutions(id);
     } catch (err: any) {
       toast({
         title: "failed to create pipe",
@@ -2110,8 +2260,27 @@ export function PipesSection({
         variant: "destructive",
       });
     } finally {
+      setDraftCreating(false);
       setCreatingPipe(false);
     }
+  };
+
+  /** A requirement in the create tooltip points at the thing that fixes it. */
+  const focusDraftRequirement = (key: PipeDraftRequirementKey) => {
+    const testId =
+      key === "name"
+        ? "pipe-draft-name"
+        : key === "prompt"
+          ? "pipe-draft-prompt"
+          : key === "id"
+            ? "pipe-draft-id"
+            : "pipe-draft-preset";
+    const host = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+    // The preset row hosts a popover trigger; everything else is the field.
+    const target =
+      key === "model" ? host?.querySelector<HTMLElement>("button") ?? host : host;
+    target?.focus();
+    if (key === "model") target?.click();
   };
 
   const savePipeContent = useCallback(async (name: string, content: string) => {
@@ -2309,6 +2478,31 @@ export function PipesSection({
   const selectedPipe = expanded
     ? pipes.find((p) => p.config.name === expanded) ?? null
     : null;
+
+  // ── draft derivations ────────────────────────────────────────────────────
+  // The id follows the name until the user takes it over — derived here every
+  // render rather than mirrored into state, so the two can never disagree.
+  const takenPipeIds = React.useMemo(
+    () => new Set(pipes.map((pipe) => pipe.config.name)),
+    [pipes],
+  );
+  const derivedDraftId = draft ? derivePipeId(draft.name, takenPipeIds) : null;
+  const draftPipeId = draft?.manualId ?? derivedDraftId?.id ?? "";
+  /** a hand-picked id that collides — the derived path resolves its own */
+  const draftIdTaken = draft?.manualId != null && takenPipeIds.has(draft.manualId);
+  const draftRequirements = draft
+    ? pipeDraftRequirements({
+        name: draft.name,
+        prompt: draft.prompt,
+        presetId: draft.presetId,
+        idTaken: draftIdTaken,
+      })
+    : [];
+  const draftIdNote = draftIdTaken
+    ? `"${draft?.manualId}" already exists — pick another id`
+    : derivedDraftId?.collided && draft?.manualId == null
+      ? `"${derivedDraftId.base}" already exists — using ${derivedDraftId.id}`
+      : null;
 
   // ── row view-models ──────────────────────────────────────────────────────
   // Everything the row renders is derived once per change here instead of
@@ -2600,7 +2794,7 @@ export function PipesSection({
   // Selecting a pipe is the only thing that flips the page from the centered
   // reading column to the edge-to-edge master–detail layout.
   const layoutMode = resolvePipesLayoutMode(
-    !!selectedPipe && pipeTypeFilter !== "cloud",
+    (!!selectedPipe || !!draft) && pipeTypeFilter !== "cloud",
   );
 
   /**
@@ -2609,6 +2803,13 @@ export function PipesSection({
    */
   const handleListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
+      // A draft is the more urgent thing on screen when both could apply —
+      // and it is the one that can lose work, so it asks before closing.
+      if (draftRef.current) {
+        event.preventDefault();
+        requestCloseDraft();
+        return;
+      }
       if (expandedRef.current) {
         event.preventDefault();
         closePanel();
@@ -2741,7 +2942,7 @@ export function PipesSection({
         actions={headerActions}
         onOpenCommunity={() => onOpenCommunity?.()}
         onDescribeInChat={() => void startCreatePipeInChat()}
-        onSetUpManually={() => void createBlankPipe()}
+        onSetUpManually={openManualDraft}
       />
 
       {/* Toolbar: swaps between search bar and selection bar */}
@@ -3071,7 +3272,115 @@ export function PipesSection({
       />
             </div>
           ),
-          detail: selectedPipe && pipeTypeFilter !== "cloud" && (() => {
+          detail: (draft && pipeTypeFilter !== "cloud" && (
+            <PipeDraftPanel
+              name={draft.name}
+              onNameChange={(name) => patchDraft({ name })}
+              pipeId={draftPipeId}
+              idIsManual={draft.manualId != null}
+              // Taking the id over freezes it at whatever it currently reads,
+              // so `edit` never blanks the field the user is looking at.
+              onIdEdit={() => patchDraft({ manualId: draftPipeId })}
+              onIdChange={(manualId) => patchDraft({ manualId })}
+              idNote={draftIdNote}
+              prompt={draft.prompt}
+              onPromptChange={(prompt) => patchDraft({ prompt })}
+              presetSlot={
+                <AIPresetsSelector
+                  compact
+                  allowNone
+                  showNameOnly
+                  // Not "pipe defaults": a draft with no model cannot run, so
+                  // the row asks for one instead of offering a deferral.
+                  noneLabel="choose a model"
+                  triggerVariant="ghost"
+                  containerClassName="w-auto gap-0"
+                  triggerClassName={SETTINGS_SELECT_TRIGGER_CLASS}
+                  controlledPresetId={draft.presetId}
+                  onControlledSelect={(presetId) =>
+                    patchDraft({ presetId: presetId || null })
+                  }
+                />
+              }
+              connectionsSlot={
+                <>
+                  {draft.connections.map((connId) => {
+                    const conn = availableConnections.find(
+                      (c) => c.id === pipeConnectionLookupKey(connId),
+                    );
+                    const isConnected = conn?.connected ?? false;
+                    const label = pipeConnectionDisplayName(
+                      connId,
+                      conn,
+                      pipeConnectionInstanceName(connId),
+                    );
+                    return (
+                      <div
+                        key={connId}
+                        className={cn(
+                          "flex items-center gap-2 border px-2 py-1 font-mono text-[11px] transition-colors duration-150",
+                          isConnected ? "border-foreground/20" : "border-destructive/50",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "h-1.5 w-1.5",
+                            isConnected ? "bg-foreground" : "bg-destructive",
+                          )}
+                        />
+                        <span className={isConnected ? undefined : "text-destructive"}>
+                          {label}
+                        </span>
+                        <button
+                          className="text-muted-foreground transition-colors duration-150 hover:text-foreground"
+                          aria-label={`remove ${label}`}
+                          onClick={() =>
+                            patchDraft({
+                              connections: draft.connections.filter((c) => c !== connId),
+                            })
+                          }
+                        >
+                          ×
+                        </button>
+                      </div>
+                    );
+                  })}
+                  {draft.connections.length === 0 && (
+                    <span className="font-mono text-[12px] text-muted-foreground">
+                      none
+                    </span>
+                  )}
+                </>
+              }
+              connectionsAddSlot={
+                <PipeConnectionPicker
+                  availableConnections={availableConnections}
+                  selectedConnections={draft.connections}
+                  onAdd={(key) => {
+                    if (draft.connections.includes(key)) return;
+                    patchDraft({ connections: [...draft.connections, key] });
+                  }}
+                  onOpenConnections={() => {
+                    window.dispatchEvent(
+                      new CustomEvent("open-settings", {
+                        detail: { section: "connections" },
+                      }),
+                    );
+                  }}
+                />
+              }
+              schedule={draft.schedule}
+              onScheduleChange={(schedule) => patchDraft({ schedule })}
+              notificationsEnabled={draft.notifications}
+              onNotificationsChange={(notifications) => patchDraft({ notifications })}
+              requirements={draftRequirements}
+              onRequirementSelect={focusDraftRequirement}
+              creating={draftCreating}
+              onCreate={() => void createFromDraft()}
+              onCancel={() => requestCloseDraft()}
+            />
+          )) ||
+          (selectedPipe && pipeTypeFilter !== "cloud" && (() => {
             const name = selectedPipe.config.name;
             const recentExecs = pipeExecutions[name] || [];
             const runningExec =
@@ -3114,6 +3423,65 @@ export function PipesSection({
                   isRunning && lifecycle && lifecycle !== "running"
                     ? lifecycleStatusText(lifecycle)
                     : null
+                }
+                createdStrip={
+                  createdNotice?.name === name ? (
+                    <>
+                      <span>created</span>
+                      <span aria-hidden>·</span>
+                      <span>
+                        next run{" "}
+                        {formatClock(nextRuns[name]) ??
+                          pipeTriggerSummary(selectedPipe.config)}
+                      </span>
+                      <span aria-hidden>·</span>
+                      <button
+                        type="button"
+                        data-testid="pipe-detail-created-run-now"
+                        className="underline underline-offset-2 transition-colors duration-150 hover:text-foreground"
+                        onClick={() => void runPipe(name)}
+                      >
+                        run now
+                      </button>
+                    </>
+                  ) : null
+                }
+                blockedNote={
+                  createdNotice?.name === name && createdNotice.missing.length > 0 ? (
+                    <>
+                      <span>
+                        needs{" "}
+                        {createdNotice.missing
+                          .map((id) =>
+                            pipeConnectionDisplayName(
+                              id,
+                              availableConnections.find(
+                                (c) => c.id === pipeConnectionLookupKey(id),
+                              ),
+                              pipeConnectionInstanceName(id),
+                            ),
+                          )
+                          .join(", ")}{" "}
+                        to run.
+                      </span>
+                      <button
+                        type="button"
+                        data-testid="pipe-detail-blocked-connect"
+                        className="underline underline-offset-2"
+                        onClick={() =>
+                          setConnectionModal({
+                            pipeName: name,
+                            connections: createdNotice.missing,
+                          })
+                        }
+                      >
+                        connect
+                      </button>
+                      <span className="text-muted-foreground">
+                        scheduled runs are skipped until then.
+                      </span>
+                    </>
+                  ) : null
                 }
                 bodyValue={splitPipeMd(rawCurrent).body}
                 onBodyChange={(value) =>
@@ -3385,7 +3753,8 @@ export function PipesSection({
                 onClose={closePanel}
               />
             );
-          })(),
+          })()) ||
+          null,
         }}
       </PipesSplitView>
 
@@ -3517,6 +3886,45 @@ export function PipesSection({
             >
               {bulkDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : <Trash2 className="h-3.5 w-3.5 mr-1.5" />}
               delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Discard guard — a dirty draft is unsaved work with nothing on disk
+          behind it, so walking away from it asks once. An untouched draft
+          never gets here. */}
+      <Dialog
+        open={!!discardConfirm}
+        onOpenChange={(open) => {
+          if (!open) setDiscardConfirm(null);
+        }}
+      >
+        <DialogContent data-testid="pipe-discard-dialog">
+          <DialogHeader>
+            <DialogTitle>discard this pipe?</DialogTitle>
+            <DialogDescription>
+              it hasn&apos;t been created yet, so nothing will be saved.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="ghost"
+              data-testid="pipe-discard-cancel"
+              onClick={() => setDiscardConfirm(null)}
+            >
+              keep editing
+            </Button>
+            <Button
+              variant="destructive"
+              data-testid="pipe-discard-confirm"
+              onClick={() => {
+                const next = discardConfirm?.next ?? null;
+                setDiscardConfirm(null);
+                discardDraft(next);
+              }}
+            >
+              discard
             </Button>
           </DialogFooter>
         </DialogContent>

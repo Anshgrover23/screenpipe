@@ -1145,4 +1145,137 @@ describe('Pipes page: header, filters, detail panel, run now', function () {
     const filepath = await saveScreenshot('pipes-describe-in-chat');
     expect(existsSync(filepath)).toBe(true);
   });
+
+  // ─── Set up manually (draft) ──────────────────────────────────────────────
+
+  /**
+   * `set up manually` opens a DRAFT of the detail pane. Nothing is written
+   * until `create`, so the regression this guards is the old behaviour: the
+   * menu click wrote `~/.screenpipe/pipes/new-pipe-N/pipe.md` immediately,
+   * auto-named the pipe, and left it on disk when the user walked away.
+   *
+   *   pipe-draft-panel   →  data-testid="pipe-draft-name" / "pipe-draft-id" /
+   *                         "pipe-draft-id-edit" / "pipe-draft-prompt" /
+   *                         "pipe-draft-create" / "pipe-draft-cancel" /
+   *                         "pipe-draft-requirements"
+   *   discard guard      →  data-testid="pipe-discard-confirm" / "pipe-discard-cancel"
+   */
+  it('opens a draft that writes nothing, then creates the pipe on demand', async function () {
+    const DRAFT_NAME = 'E2E Draft Pipe';
+    const DRAFT_ID = 'e2e-draft-pipe';
+
+    // Start clean — a leftover from a previous run would change the derived id
+    // to `e2e-draft-pipe-2` and make every assertion below lie.
+    await apiRequest('DELETE', `/pipes/${DRAFT_ID}`).catch(() => undefined);
+    await openPipesPage();
+
+    try {
+      const menu = await $('[data-testid="pipes-new-menu-btn"]');
+      await menu.click();
+      const manual = await $('[data-testid="pipes-new-manual"]');
+      await manual.waitForExist({ timeout: t(5_000) });
+      await manual.click();
+
+      // The draft pane opens…
+      const draft = await $('[data-testid="pipe-draft-panel"]');
+      await draft.waitForExist({ timeout: t(10_000) });
+      // …with nothing on disk and no row in the list.
+      expect(await $(`[data-testid="pipe-row-${DRAFT_ID}"]`).isExisting()).toBe(false);
+      const onDisk = await apiRequest('GET', `/pipes/${DRAFT_ID}`).catch(() => null);
+      expect(onDisk?.data ?? null).toBe(null);
+
+      // The prompt is a PLACEHOLDER — a fresh draft carries no body text.
+      const prompt = await $('[data-testid="pipe-draft-panel"] textarea');
+      expect((await prompt.getValue()) || '').toBe('');
+
+      // `create` is gated until the pipe could actually run.
+      const create = await $('[data-testid="pipe-draft-create"]');
+      expect(await create.isEnabled()).toBe(false);
+
+      const name = await $('[data-testid="pipe-draft-name"]');
+      await name.setValue(DRAFT_NAME);
+      // The id follows the name, lowercased and hyphenated.
+      await browser.waitUntil(
+        async () => (await $('[data-testid="pipe-draft-id"]').getText()).includes(DRAFT_ID),
+        { timeout: t(5_000), timeoutMsg: 'draft id did not derive from the name' },
+      );
+      expect(await create.isEnabled()).toBe(false);
+
+      await prompt.setValue('summarize the last hour. this draft never really runs.');
+      await browser.waitUntil(async () => await create.isEnabled(), {
+        timeout: t(5_000),
+        timeoutMsg: 'create stayed disabled with a name, a prompt and a default preset',
+      });
+
+      const shot = await saveScreenshot('pipes-manual-draft');
+      expect(existsSync(shot)).toBe(true);
+
+      await create.click();
+
+      // The pane becomes the ordinary saved pane for the new pipe…
+      const pane = await $(`[data-pipe-detail="${DRAFT_ID}"]`);
+      await pane.waitForExist({ timeout: t(20_000) });
+      expect(await $('[data-testid="pipe-draft-panel"]').isExisting()).toBe(false);
+      // …carrying the one-line receipt instead of a toast.
+      const strip = await $('[data-testid="pipe-detail-created-strip"]');
+      expect(await strip.isExisting()).toBe(true);
+      expect((await strip.getText()).toLowerCase()).toContain('created');
+
+      // …and the row is now really in the list, and really on disk.
+      const created = await apiRequest('GET', `/pipes/${DRAFT_ID}`);
+      expect(created?.data?.config?.name).toBe(DRAFT_ID);
+
+      const close = await $('[data-testid="pipe-detail-close"]');
+      await close.click();
+      const search = await $('[data-testid="pipes-search"]');
+      await search.setValue(DRAFT_ID);
+      const row = await $(`[data-testid="pipe-row-${DRAFT_ID}"]`);
+      await row.waitForExist({ timeout: t(10_000) });
+      await search.setValue('');
+    } finally {
+      await apiRequest('DELETE', `/pipes/${DRAFT_ID}`).catch(() => undefined);
+    }
+  });
+
+  it('asks before throwing away a draft that has been typed into', async () => {
+    await openPipesPage();
+
+    const menu = await $('[data-testid="pipes-new-menu-btn"]');
+    await menu.click();
+    const manual = await $('[data-testid="pipes-new-manual"]');
+    await manual.waitForExist({ timeout: t(5_000) });
+    await manual.click();
+    await $('[data-testid="pipe-draft-panel"]').waitForExist({ timeout: t(10_000) });
+
+    // Untouched: closes silently.
+    await $('[data-testid="pipe-draft-cancel"]').click();
+    expect(await $('[data-testid="pipe-discard-confirm"]').isExisting()).toBe(false);
+    await browser.waitUntil(
+      async () => !(await $('[data-testid="pipe-draft-panel"]').isExisting()),
+      { timeout: t(10_000), timeoutMsg: 'an untouched draft did not close silently' },
+    );
+
+    // Dirty: asks, and `keep editing` puts you back in the draft.
+    await menu.click();
+    await manual.waitForExist({ timeout: t(5_000) });
+    await manual.click();
+    await $('[data-testid="pipe-draft-panel"]').waitForExist({ timeout: t(10_000) });
+    await $('[data-testid="pipe-draft-name"]').setValue('Half Written');
+    await $('[data-testid="pipe-draft-cancel"]').click();
+
+    const keepEditing = await $('[data-testid="pipe-discard-cancel"]');
+    await keepEditing.waitForExist({ timeout: t(10_000) });
+    await keepEditing.click();
+    expect(await $('[data-testid="pipe-draft-panel"]').isExisting()).toBe(true);
+
+    // …and `discard` really drops it.
+    await $('[data-testid="pipe-draft-cancel"]').click();
+    const discard = await $('[data-testid="pipe-discard-confirm"]');
+    await discard.waitForExist({ timeout: t(10_000) });
+    await discard.click();
+    await browser.waitUntil(
+      async () => !(await $('[data-testid="pipe-draft-panel"]').isExisting()),
+      { timeout: t(10_000), timeoutMsg: 'discard did not close the draft' },
+    );
+  });
 });

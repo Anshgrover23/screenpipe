@@ -54,6 +54,221 @@ export function filterPipesByStatus<
   );
 }
 
+// ── pipe id ────────────────────────────────────────────────────────────────
+
+/**
+ * Turn what the user typed into a pipe id (its directory name).
+ *
+ * Rules mirrored byte-for-byte from the store's publish endpoint
+ * (`website/app/api/pipes/store/publish/route.ts`): lowercase, every run of
+ * non-`[a-z0-9]` collapses to a single `-`, then leading/trailing `-` is
+ * dropped. If the two implementations ever diverge, publishing a pipe silently
+ * renames it — so this stays a literal transcription, not an improvement.
+ *
+ * Emoji-only / punctuation-only input yields `""`; callers pick the fallback.
+ */
+export function slugifyPipeName(input: string): string {
+  return (input ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+// ── new-pipe draft ─────────────────────────────────────────────────────────
+
+/** What an all-punctuation / emoji-only name slugifies to. */
+export const PIPE_ID_FALLBACK = "pipe";
+
+/** The concrete schedule a draft ships with — never "manual", never blank. */
+export const PIPE_DRAFT_DEFAULT_SCHEDULE = "every 1h";
+
+export interface DerivedPipeId {
+  /** the id to actually use — suffixed when the base is taken */
+  id: string;
+  /** the slug before collision resolution */
+  base: string;
+  /** true when `id !== base`, i.e. a pipe of that name already exists */
+  collided: boolean;
+}
+
+/**
+ * Derive a pipe id from what the user typed, resolving collisions against the
+ * ids already on disk: `morning-brief`, then `morning-brief-2`, `-3`, …
+ *
+ * Collisions are resolved HERE, at derive time, so the pane can say so while
+ * the user is still typing instead of surprising them at submit.
+ */
+export function derivePipeId(
+  name: string,
+  taken: Iterable<string> = [],
+): DerivedPipeId {
+  const base = slugifyPipeName(name) || PIPE_ID_FALLBACK;
+  const used = taken instanceof Set ? taken : new Set(taken);
+  if (!used.has(base)) return { id: base, base, collided: false };
+  let n = 2;
+  while (used.has(`${base}-${n}`)) n += 1;
+  return { id: `${base}-${n}`, base, collided: true };
+}
+
+export interface PipeDraftState {
+  /** free text — capitals, spaces and punctuation are all fine */
+  name: string;
+  /** the prompt body; empty until the user writes one (never prefilled) */
+  prompt: string;
+  /**
+   * A hand-picked id. `null` means "derive from the name" — the moment the
+   * user edits the id this becomes a string and the derivation link is broken,
+   * so later name typing never clobbers their choice.
+   */
+  manualId: string | null;
+  /** ai preset id, pre-seeded with the user's default — null = none available */
+  presetId: string | null;
+  connections: string[];
+  schedule: string;
+  notifications: boolean;
+}
+
+export function emptyPipeDraft(presetId: string | null = null): PipeDraftState {
+  return {
+    name: "",
+    prompt: "",
+    manualId: null,
+    presetId,
+    connections: [],
+    schedule: PIPE_DRAFT_DEFAULT_SCHEDULE,
+    notifications: true,
+  };
+}
+
+/**
+ * Has the user put anything into this draft? An untouched draft closes
+ * silently; a dirty one asks first. The preset is NOT part of this — it is
+ * pre-seeded by us, not typed by them.
+ */
+export function isPipeDraftDirty(draft: PipeDraftState | null): boolean {
+  if (!draft) return false;
+  return (
+    draft.name.trim().length > 0 ||
+    draft.prompt.trim().length > 0 ||
+    draft.manualId != null ||
+    draft.connections.length > 0 ||
+    draft.schedule !== PIPE_DRAFT_DEFAULT_SCHEDULE ||
+    draft.notifications !== true
+  );
+}
+
+export type PipeDraftRequirementKey = "name" | "prompt" | "model" | "id";
+
+export interface PipeDraftRequirement {
+  key: PipeDraftRequirementKey;
+  label: string;
+}
+
+/**
+ * The unmet requirements, in pane order — "could this pipe actually run?".
+ *
+ * A pipe with no resolvable model does not fail politely: the engine refuses
+ * to run it ("configured preset is unavailable; refusing to fall back to
+ * another AI provider"), so a model is a requirement, not a preference.
+ * Schedule and notifications are deliberately absent — they ship with visible
+ * defaults, so they can never be unmet.
+ */
+export function pipeDraftRequirements(input: {
+  name: string;
+  prompt: string;
+  presetId: string | null;
+  /** a hand-picked id that is already taken — impossible on the derived path */
+  idTaken?: boolean;
+}): PipeDraftRequirement[] {
+  const unmet: PipeDraftRequirement[] = [];
+  if (!input.name.trim()) unmet.push({ key: "name", label: "name this pipe" });
+  if (!input.prompt.trim()) unmet.push({ key: "prompt", label: "write a prompt" });
+  if (!input.presetId) unmet.push({ key: "model", label: "choose an ai model" });
+  if (input.idTaken) unmet.push({ key: "id", label: "pick an id that is free" });
+  return unmet;
+}
+
+export function canCreatePipeDraft(input: {
+  name: string;
+  prompt: string;
+  presetId: string | null;
+  idTaken?: boolean;
+}): boolean {
+  return pipeDraftRequirements(input).length === 0;
+}
+
+/**
+ * Which of a draft's declared connections are not configured yet.
+ *
+ * Same rule the list rows use, kept pure so the create path and the pane's
+ * inline reason can't disagree: an id may be an instance key (`notion:crm`),
+ * so it is matched on its base id.
+ */
+export function draftMissingConnections(
+  connections: readonly string[],
+  available: readonly { id: string; connected?: boolean }[],
+  lookupKey: (id: string) => string = (id) => id.split(":")[0] ?? id,
+): string[] {
+  return connections.filter((id) => {
+    const conn = available.find((c) => c.id === lookupKey(id));
+    return !conn || !conn.connected;
+  });
+}
+
+/**
+ * Render the draft as a pipe.md.
+ *
+ * The prompt goes in the BODY verbatim — the old blank-pipe path wrote the
+ * sentence "describe what this pipe should do each run." as the body, which
+ * shipped a placeholder to the model as its instructions.
+ */
+export function buildPipeDraftMd(
+  draft: Pick<PipeDraftState, "prompt" | "presetId" | "connections" | "schedule">,
+  options: { enabled: boolean },
+): string {
+  const lines = ["---", `schedule: ${draft.schedule || PIPE_DRAFT_DEFAULT_SCHEDULE}`];
+  lines.push(`enabled: ${options.enabled ? "true" : "false"}`);
+  if (draft.presetId) lines.push(`preset: ${draft.presetId}`);
+  if (draft.connections.length > 0) {
+    lines.push("connections:");
+    for (const id of draft.connections) lines.push(`  - ${id}`);
+  }
+  lines.push("---", "", draft.prompt.trim(), "");
+  return lines.join("\n");
+}
+
+/** The filesystem calls `writePipeDraft` needs — injected so it can be tested. */
+export interface PipeDraftWriterIo {
+  homeDir: () => Promise<string>;
+  join: (...parts: string[]) => Promise<string>;
+  exists: (path: string) => Promise<boolean>;
+  mkdir: (path: string, options: { recursive: boolean }) => Promise<void>;
+  writeTextFile: (path: string, content: string) => Promise<void>;
+}
+
+/**
+ * Write a brand-new pipe to `~/.screenpipe/pipes/<id>/pipe.md`.
+ *
+ * Client-side on purpose: it is the same path the team-pipe fork uses, so the
+ * engine picks the pipe up on its next poll without a create endpoint. This is
+ * the ONLY place the manual flow touches the disk — opening the draft writes
+ * nothing.
+ */
+export async function writePipeDraft(
+  io: PipeDraftWriterIo,
+  id: string,
+  content: string,
+): Promise<string> {
+  const home = await io.homeDir();
+  const dir = await io.join(home, ".screenpipe", "pipes", id);
+  if (await io.exists(dir)) {
+    throw new Error(`a pipe called "${id}" already exists`);
+  }
+  await io.mkdir(dir, { recursive: true });
+  await io.writeTextFile(await io.join(dir, "pipe.md"), content);
+  return dir;
+}
+
 export function countActivePipes<T extends { config: { enabled: boolean } }>(
   pipes: readonly T[],
 ): number {
