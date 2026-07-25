@@ -11,6 +11,12 @@
  * pipe.md frontmatter/body splitting.
  */
 
+import {
+  defaultScheduleConfig,
+  scheduleStringToConfig,
+  type ScheduleConfig,
+} from "@/lib/utils/schedule-builder";
+
 // ── status filter ──────────────────────────────────────────────────────────
 
 export type PipeStatusFilter = "all" | "active" | "paused" | "starred";
@@ -125,6 +131,13 @@ export interface PipeDraftState {
   presetId: string | null;
   connections: string[];
   schedule: string;
+  /**
+   * Event triggers, for the `after a meeting` / `on a new message` presets.
+   * `null` = clock-only. The draft carries these so the frequency rows mean the
+   * same thing before and after `create` — the pane used to offer intervals
+   * only, which made create and edit two different settings surfaces.
+   */
+  trigger?: PipeTriggerShape | null;
   notifications: boolean;
 }
 
@@ -136,6 +149,7 @@ export function emptyPipeDraft(presetId: string | null = null): PipeDraftState {
     presetId,
     connections: [],
     schedule: PIPE_DRAFT_DEFAULT_SCHEDULE,
+    trigger: null,
     notifications: true,
   };
 }
@@ -153,6 +167,7 @@ export function isPipeDraftDirty(draft: PipeDraftState | null): boolean {
     draft.manualId != null ||
     draft.connections.length > 0 ||
     draft.schedule !== PIPE_DRAFT_DEFAULT_SCHEDULE ||
+    !pipeTriggerIsEmpty(draft.trigger) ||
     draft.notifications !== true
   );
 }
@@ -223,7 +238,10 @@ export function draftMissingConnections(
  * shipped a placeholder to the model as its instructions.
  */
 export function buildPipeDraftMd(
-  draft: Pick<PipeDraftState, "prompt" | "presetId" | "connections" | "schedule">,
+  draft: Pick<
+    PipeDraftState,
+    "prompt" | "presetId" | "connections" | "schedule" | "trigger"
+  >,
   options: { enabled: boolean },
 ): string {
   const lines = ["---", `schedule: ${draft.schedule || PIPE_DRAFT_DEFAULT_SCHEDULE}`];
@@ -233,6 +251,8 @@ export function buildPipeDraftMd(
     lines.push("connections:");
     for (const id of draft.connections) lines.push(`  - ${id}`);
   }
+  const triggerYaml = pipeDraftTriggerYaml(draft.trigger);
+  if (triggerYaml) lines.push(triggerYaml);
   lines.push("---", "", draft.prompt.trim(), "");
   return lines.join("\n");
 }
@@ -614,4 +634,461 @@ export function replacePipeBody(raw: string, body: string): string {
   if (!frontmatter) return body;
   const fm = frontmatter.endsWith("\n") ? frontmatter : `${frontmatter}\n`;
   return `${fm}${body.replace(/^\n+/, "")}`;
+}
+
+// ── frequency: the `repeat` / `on` / `at` rows ─────────────────────────────
+//
+// The pane used to show ONE `when to run` row that disclosed the full trigger
+// builder IN PLACE OF itself — which is exactly why clicking `edit` made the
+// label vanish. The disclosure is gone: frequency is now three (or four)
+// always-labelled rows backed by presets, and the builder is reachable only
+// through `custom…`, in a dialog layered over the pane.
+//
+// Everything below is pure so both directions are unit-testable and the
+// round-trip (preset → config → preset) can be asserted lossless.
+
+/** What the `repeat` row can be set to, in menu order. */
+export type PipeRepeat =
+  | "hourly"
+  | "daily"
+  | "weekdays"
+  | "weekly"
+  | "meeting"
+  | "message"
+  | "manual"
+  | "custom";
+
+export interface PipeRepeatOption {
+  value: PipeRepeat;
+  label: string;
+  /** draw a menu separator ABOVE this option (group boundary) */
+  separatorBefore?: boolean;
+}
+
+/**
+ * Three groups: recurrences, event triggers + manual, then the escape hatch.
+ * `custom…` never *writes* anything — picking it opens the full builder, and
+ * the row only reads back as `custom` if what the builder saved has no preset.
+ */
+export const PIPE_REPEAT_OPTIONS: readonly PipeRepeatOption[] = [
+  { value: "hourly", label: "hourly" },
+  { value: "daily", label: "daily" },
+  { value: "weekdays", label: "weekdays" },
+  { value: "weekly", label: "weekly" },
+  { value: "meeting", label: "after a meeting", separatorBefore: true },
+  { value: "message", label: "on a new message" },
+  { value: "manual", label: "manual only" },
+  { value: "custom", label: "custom…", separatorBefore: true },
+];
+
+export function pipeRepeatLabel(repeat: PipeRepeat): string {
+  return PIPE_REPEAT_OPTIONS.find((o) => o.value === repeat)?.label ?? repeat;
+}
+
+/** Recurrences take an `at`; event triggers and manual do not. */
+export function pipeRepeatHasAt(repeat: PipeRepeat): boolean {
+  return (
+    repeat === "hourly" ||
+    repeat === "daily" ||
+    repeat === "weekdays" ||
+    repeat === "weekly"
+  );
+}
+
+/** Only a weekly recurrence needs a day. */
+export function pipeRepeatHasOn(repeat: PipeRepeat): boolean {
+  return repeat === "weekly";
+}
+
+export interface PipeFrequencyValue {
+  repeat: PipeRepeat;
+  /** hourly only — minute offset past the hour (0 | 15 | 30 | 45) */
+  minute: number;
+  /** daily / weekdays / weekly — minutes since local midnight, 15-min steps */
+  timeOfDay: number;
+  /** weekly only — 0 = Sunday … 6 = Saturday */
+  weekday: number;
+}
+
+/** Every pipe that has no opinion yet reads as hourly on the hour. */
+export const PIPE_FREQUENCY_DEFAULT: PipeFrequencyValue = {
+  repeat: "hourly",
+  minute: 0,
+  timeOfDay: 9 * 60,
+  weekday: 1,
+};
+
+/** The minute offsets the `at` row offers when repeating hourly. */
+export const PIPE_HOURLY_MINUTES: readonly number[] = [0, 15, 30, 45];
+
+/** Time-of-day granularity — 15 minutes, so `at` is 96 entries, not 1440. */
+export const PIPE_TIME_STEP_MINUTES = 15;
+
+export interface PipeSelectOption {
+  value: string;
+  label: string;
+}
+
+/** `on the hour` / `:15` / `:30` / `:45`. */
+export function pipeHourlyMinuteOptions(): PipeSelectOption[] {
+  return PIPE_HOURLY_MINUTES.map((m) => ({
+    value: String(m),
+    label: m === 0 ? "on the hour" : `:${String(m).padStart(2, "0")}`,
+  }));
+}
+
+/** "9:15am" — lowercase clock, same voice as `formatClock`. */
+export function formatTimeOfDay(minutes: number): string {
+  const total = ((Math.round(minutes) % 1440) + 1440) % 1440;
+  const h24 = Math.floor(total / 60);
+  const mm = String(total % 60).padStart(2, "0");
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12}:${mm}${h24 < 12 ? "am" : "pm"}`;
+}
+
+/** 15-minute steps across the whole day, midnight-first. */
+export function pipeTimeOfDayOptions(): PipeSelectOption[] {
+  const out: PipeSelectOption[] = [];
+  for (let m = 0; m < 1440; m += PIPE_TIME_STEP_MINUTES) {
+    out.push({ value: String(m), label: formatTimeOfDay(m) });
+  }
+  return out;
+}
+
+/** 0 = Sunday … 6 = Saturday, matching `ScheduleConfig.days_of_week`. */
+export const PIPE_WEEKDAY_OPTIONS: readonly PipeSelectOption[] = [
+  { value: "0", label: "sunday" },
+  { value: "1", label: "monday" },
+  { value: "2", label: "tuesday" },
+  { value: "3", label: "wednesday" },
+  { value: "4", label: "thursday" },
+  { value: "5", label: "friday" },
+  { value: "6", label: "saturday" },
+];
+
+export interface PipeTriggerSourceShape {
+  app: string;
+  kind?: string;
+  instance?: string;
+  path?: string;
+  filter?: Record<string, string>;
+}
+
+export interface PipeTriggerShape {
+  events?: string[];
+  custom?: string[];
+  sources?: PipeTriggerSourceShape[];
+}
+
+/** The single event `after a meeting` stands for — a call wrapping up. */
+export const PIPE_MEETING_TRIGGER_EVENT = "meeting_ended";
+
+/** `on a new message` = any Slack message, unfiltered. Narrowing to a channel
+ *  is a builder job, and a filtered source therefore reads back as `custom`. */
+export const PIPE_MESSAGE_TRIGGER_SOURCE: PipeTriggerSourceShape = {
+  app: "slack",
+  kind: "message",
+};
+
+export function pipeTriggerIsEmpty(trigger: PipeTriggerShape | null | undefined): boolean {
+  if (!trigger) return true;
+  return !(
+    (trigger.events?.length ?? 0) ||
+    (trigger.custom?.length ?? 0) ||
+    (trigger.sources?.length ?? 0)
+  );
+}
+
+function isMessageSource(source: PipeTriggerSourceShape | undefined): boolean {
+  if (!source) return false;
+  if (source.app !== PIPE_MESSAGE_TRIGGER_SOURCE.app) return false;
+  if ((source.kind ?? "message") !== PIPE_MESSAGE_TRIGGER_SOURCE.kind) return false;
+  // an instance, a path or a channel filter is more than the preset says
+  if (source.instance || source.path) return false;
+  return Object.keys(source.filter ?? {}).length === 0;
+}
+
+function withRepeat(repeat: PipeRepeat, over: Partial<PipeFrequencyValue> = {}) {
+  return { ...PIPE_FREQUENCY_DEFAULT, ...over, repeat };
+}
+
+/**
+ * Read a stored `ScheduleConfig` back as a preset.
+ *
+ * Anything the four recurrence presets cannot express verbatim — an interval
+ * other than 1, a monthly rule, an end date, a run cap, an off-grid minute —
+ * is `custom`, so the row never claims a shape the config does not have.
+ */
+function frequencyFromScheduleConfig(cfg: ScheduleConfig): PipeFrequencyValue {
+  if (cfg.ending || cfg.max_occurrences != null) return withRepeat("custom");
+  if ((cfg.interval ?? 1) !== 1) return withRepeat("custom");
+
+  const minute = cfg.at_minute ?? 0;
+  const days = Array.from(new Set(cfg.days_of_week ?? [])).sort((a, b) => a - b);
+
+  if (cfg.frequency === "hours") {
+    if (days.length > 0) return withRepeat("custom");
+    if (!PIPE_HOURLY_MINUTES.includes(minute)) return withRepeat("custom");
+    return withRepeat("hourly", { minute });
+  }
+
+  if (minute % PIPE_TIME_STEP_MINUTES !== 0) return withRepeat("custom");
+  const timeOfDay = (cfg.at_hour ?? 0) * 60 + minute;
+
+  if (cfg.frequency === "days") {
+    if (days.length > 0) return withRepeat("custom");
+    return withRepeat("daily", { timeOfDay });
+  }
+
+  if (cfg.frequency === "weeks") {
+    if (days.join(",") === "1,2,3,4,5") return withRepeat("weekdays", { timeOfDay });
+    if (days.length === 1) return withRepeat("weekly", { timeOfDay, weekday: days[0] });
+    return withRepeat("custom");
+  }
+
+  return withRepeat("custom");
+}
+
+export interface PipeFrequencyConfigInput {
+  /** the legacy frontmatter string; "manual"/"" when a structured config rules */
+  schedule?: string | null;
+  scheduleConfig?: ScheduleConfig | null;
+  trigger?: PipeTriggerShape | null;
+}
+
+/**
+ * config → the three rows.
+ *
+ * A pipe that mixes a schedule WITH triggers, chains off another pipe, filters
+ * a Slack channel, or carries a hand-written cron is `custom`: the presets are
+ * a strict subset, and pretending otherwise would silently rewrite the pipe the
+ * first time the user touched an unrelated row.
+ */
+export function pipeFrequencyFromConfig(
+  input: PipeFrequencyConfigInput,
+): PipeFrequencyValue {
+  const trigger = input.trigger ?? null;
+  const cfg = input.scheduleConfig ?? null;
+  const scheduleText = (input.schedule ?? "").trim();
+  const hasSchedule =
+    !!cfg || (scheduleText !== "" && scheduleText.toLowerCase() !== "manual");
+
+  if (!pipeTriggerIsEmpty(trigger)) {
+    // a trigger on top of a recurrence is a multi-trigger setup, not a preset
+    if (hasSchedule) return withRepeat("custom");
+    const events = trigger?.events ?? [];
+    const sources = trigger?.sources ?? [];
+    if ((trigger?.custom?.length ?? 0) > 0) return withRepeat("custom");
+    if (
+      events.length === 1 &&
+      sources.length === 0 &&
+      events[0] === PIPE_MEETING_TRIGGER_EVENT
+    ) {
+      return withRepeat("meeting");
+    }
+    if (events.length === 0 && sources.length === 1 && isMessageSource(sources[0])) {
+      return withRepeat("message");
+    }
+    return withRepeat("custom");
+  }
+
+  if (!hasSchedule) return withRepeat("manual");
+
+  const structured = cfg ?? scheduleStringToConfig(scheduleText);
+  if (!structured) return withRepeat("custom");
+  return frequencyFromScheduleConfig(structured);
+}
+
+export interface PipeFrequencyWrite {
+  /** `null` clears the structured schedule — the engine parks `schedule: manual` */
+  schedule_config: ScheduleConfig | null;
+  /** `null` clears every trigger */
+  trigger: PipeTriggerShape | null;
+}
+
+/**
+ * the three rows → config, ready to POST as `/pipes/:name/config`.
+ *
+ * `schedule` is deliberately NOT part of the payload: the Rust handler already
+ * parks the legacy string at "manual" whenever `schedule_config` is present,
+ * and it iterates the update map in unspecified order — sending both keys would
+ * make the result depend on hash ordering.
+ *
+ * Returns `null` for `custom`, which is not a value the rows can write: picking
+ * `custom…` opens the builder instead.
+ */
+export function pipeFrequencyToConfig(
+  value: PipeFrequencyValue,
+  base?: ScheduleConfig | null,
+): PipeFrequencyWrite | null {
+  // keep the user's timezone / start date; drop anything a preset cannot mean
+  const skeleton: ScheduleConfig = {
+    ...(base ?? defaultScheduleConfig()),
+    interval: 1,
+    day_of_month: null,
+    ending: null,
+    max_occurrences: null,
+  };
+  const minute = PIPE_HOURLY_MINUTES.includes(value.minute) ? value.minute : 0;
+  const total = ((Math.round(value.timeOfDay) % 1440) + 1440) % 1440;
+  const atHour = Math.floor(total / 60);
+  const atMinute = total % 60;
+  const weekday = ((Math.round(value.weekday) % 7) + 7) % 7;
+
+  switch (value.repeat) {
+    case "hourly":
+      return {
+        schedule_config: {
+          ...skeleton,
+          frequency: "hours",
+          days_of_week: [],
+          at_hour: 0,
+          at_minute: minute,
+        },
+        trigger: null,
+      };
+    case "daily":
+      return {
+        schedule_config: {
+          ...skeleton,
+          frequency: "days",
+          days_of_week: [],
+          at_hour: atHour,
+          at_minute: atMinute,
+        },
+        trigger: null,
+      };
+    case "weekdays":
+      return {
+        schedule_config: {
+          ...skeleton,
+          frequency: "weeks",
+          days_of_week: [1, 2, 3, 4, 5],
+          at_hour: atHour,
+          at_minute: atMinute,
+        },
+        trigger: null,
+      };
+    case "weekly":
+      return {
+        schedule_config: {
+          ...skeleton,
+          frequency: "weeks",
+          days_of_week: [weekday],
+          at_hour: atHour,
+          at_minute: atMinute,
+        },
+        trigger: null,
+      };
+    case "meeting":
+      return {
+        schedule_config: null,
+        trigger: { events: [PIPE_MEETING_TRIGGER_EVENT] },
+      };
+    case "message":
+      return {
+        schedule_config: null,
+        trigger: { sources: [{ ...PIPE_MESSAGE_TRIGGER_SOURCE }] },
+      };
+    case "manual":
+      return { schedule_config: null, trigger: null };
+    case "custom":
+      return null;
+  }
+}
+
+// ── frequency in a DRAFT ───────────────────────────────────────────────────
+//
+// A draft has no pipe on disk, so it cannot POST a `schedule_config` — it
+// renders one `pipe.md`. The same rows therefore round-trip through the
+// frontmatter's `schedule` string (plus a `trigger` block for the two event
+// presets), and the strings emitted here are exactly the ones parsed back.
+
+export interface PipeFrequencyDraft {
+  schedule: string;
+  trigger: PipeTriggerShape | null;
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** the three rows → what goes in the draft's frontmatter */
+export function pipeFrequencyToDraft(value: PipeFrequencyValue): PipeFrequencyDraft {
+  const write = pipeFrequencyToConfig(value);
+  const total = ((Math.round(value.timeOfDay) % 1440) + 1440) % 1440;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  const weekday = ((Math.round(value.weekday) % 7) + 7) % 7;
+  const trigger = write?.trigger ?? null;
+
+  switch (value.repeat) {
+    case "hourly": {
+      const minute = PIPE_HOURLY_MINUTES.includes(value.minute) ? value.minute : 0;
+      // the plain interval stays human — it is the draft's visible default
+      return { schedule: minute === 0 ? "every 1h" : `${minute} * * * *`, trigger };
+    }
+    case "daily":
+      return { schedule: `${m} ${h} * * *`, trigger };
+    case "weekdays":
+      return { schedule: `${m} ${h} * * 1-5`, trigger };
+    case "weekly":
+      return { schedule: `${m} ${h} * * ${weekday}`, trigger };
+    default:
+      // meeting / message / manual / custom all run off triggers, never a clock
+      return { schedule: "manual", trigger };
+  }
+}
+
+/** what is in the draft's frontmatter → the three rows */
+export function pipeFrequencyFromDraft(draft: PipeFrequencyDraft): PipeFrequencyValue {
+  if (!pipeTriggerIsEmpty(draft.trigger)) {
+    return pipeFrequencyFromConfig({ schedule: "manual", trigger: draft.trigger });
+  }
+
+  const s = (draft.schedule ?? "").trim();
+  if (!s || s.toLowerCase() === "manual") return withRepeat("manual");
+
+  if (/^(?:every\s+)?1\s*(?:h|hr|hour|hours)$/i.test(s)) return withRepeat("hourly");
+
+  const parts = s.split(/\s+/);
+  if (parts.length === 5) {
+    const [min, hour, dom, mon, dow] = parts;
+    const int = (t: string) => (/^\d+$/.test(t) ? Number(t) : null);
+    const minN = int(min);
+    if (minN != null && dom === "*" && mon === "*") {
+      if (hour === "*" && dow === "*" && PIPE_HOURLY_MINUTES.includes(minN)) {
+        return withRepeat("hourly", { minute: minN });
+      }
+      const hourN = int(hour);
+      if (hourN != null && hourN < 24 && minN % PIPE_TIME_STEP_MINUTES === 0) {
+        const timeOfDay = hourN * 60 + minN;
+        if (dow === "*") return withRepeat("daily", { timeOfDay });
+        if (dow === "1-5") return withRepeat("weekdays", { timeOfDay });
+        const dowN = int(dow);
+        if (dowN != null && dowN <= 6) return withRepeat("weekly", { timeOfDay, weekday: dowN });
+      }
+    }
+  }
+
+  // "every 15m", "every 6h", a hand-written cron — real, just not a preset
+  return withRepeat("custom");
+}
+
+/** YAML for the two trigger shapes a draft can produce. `""` when there is none. */
+export function pipeDraftTriggerYaml(trigger: PipeTriggerShape | null | undefined): string {
+  if (pipeTriggerIsEmpty(trigger)) return "";
+  const lines = ["trigger:"];
+  if (trigger?.events?.length) {
+    lines.push("  events:");
+    for (const event of trigger.events) lines.push(`    - ${event}`);
+  }
+  if (trigger?.sources?.length) {
+    lines.push("  sources:");
+    for (const source of trigger.sources) {
+      lines.push(`    - app: ${source.app}`);
+      if (source.kind) lines.push(`      kind: ${source.kind}`);
+    }
+  }
+  return lines.join("\n");
 }

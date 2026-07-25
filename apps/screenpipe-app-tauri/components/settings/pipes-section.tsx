@@ -145,6 +145,10 @@ import {
   lifecycleStatusText,
   parseRunResponse,
   pipeDraftRequirements,
+  pipeFrequencyFromConfig,
+  pipeFrequencyFromDraft,
+  pipeFrequencyToConfig,
+  pipeFrequencyToDraft,
   replacePipeBody,
   splitPipeMd,
   writePipeDraft,
@@ -2645,13 +2649,9 @@ export function PipesSection({
     return (
       <PipeActionsMenu
         pipeName={name}
-        enabled={pipe.config.enabled}
         isRunning={isRunning}
         stopping={stoppingPipe === name}
         readOnly={readOnly}
-        canToggle={
-          !enterpriseManaged && !(hasMissingConnections && !pipe.config.enabled)
-        }
         canDelete={
           !enterpriseManaged && (!isReceivedTeamPipe(pipe) || isUnsharedLeftover(pipe))
         }
@@ -2666,7 +2666,6 @@ export function PipesSection({
           void runPipe(name);
         }}
         onStop={() => void stopPipe(name)}
-        onToggleEnabled={(enabled) => togglePipe(name, enabled)}
         onFork={() => forkPipe(name, source)}
         onOptimize={() => optimizePipe(name, source)}
         onDelete={() => deletePipe(name)}
@@ -3303,7 +3302,10 @@ export function PipesSection({
                 />
               }
               connectionsSlot={
-                <>
+                // `null`, not an empty fragment: the row drops the separator
+                // and reads as a bare `add ⌄` when nothing is connected.
+                draft.connections.length > 0 ? (
+                  <>
                   {draft.connections.map((connId) => {
                     const conn = availableConnections.find(
                       (c) => c.id === pipeConnectionLookupKey(connId),
@@ -3345,12 +3347,8 @@ export function PipesSection({
                       </div>
                     );
                   })}
-                  {draft.connections.length === 0 && (
-                    <span className="font-mono text-[12px] text-muted-foreground">
-                      none
-                    </span>
-                  )}
-                </>
+                  </>
+                ) : null
               }
               connectionsAddSlot={
                 <PipeConnectionPicker
@@ -3369,8 +3367,11 @@ export function PipesSection({
                   }}
                 />
               }
-              schedule={draft.schedule}
-              onScheduleChange={(schedule) => patchDraft({ schedule })}
+              frequency={pipeFrequencyFromDraft({
+                schedule: draft.schedule,
+                trigger: draft.trigger ?? null,
+              })}
+              onFrequencyChange={(next) => patchDraft(pipeFrequencyToDraft(next))}
               notificationsEnabled={draft.notifications}
               onNotificationsChange={(notifications) => patchDraft({ notifications })}
               requirements={draftRequirements}
@@ -3518,7 +3519,9 @@ export function PipesSection({
                   )
                 }
                 connectionsSlot={
-                  <>
+                  // `null` when empty — see the draft's slot above.
+                  (selectedPipe.config.connections || []).length > 0 ? (
+                    <>
                     {(selectedPipe.config.connections || []).map((connId) => {
                       const baseId = pipeConnectionLookupKey(connId);
                       const instanceName = pipeConnectionInstanceName(connId);
@@ -3581,10 +3584,8 @@ export function PipesSection({
                         </div>
                       );
                     })}
-                    {(selectedPipe.config.connections || []).length === 0 && (
-                      <span className="font-mono text-[12px] text-muted-foreground">none</span>
-                    )}
-                  </>
+                    </>
+                  ) : null
                 }
                 connectionsAddSlot={
                   <PipeConnectionPicker
@@ -3616,17 +3617,53 @@ export function PipesSection({
                       }}
                     />
                 }
-                scheduleSummary={
+                frequency={pipeFrequencyFromConfig({
+                  schedule: selectedPipe.config.schedule,
+                  scheduleConfig: selectedPipe.config.schedule_config ?? null,
+                  trigger: selectedPipe.config.trigger ?? null,
+                })}
+                onFrequencyChange={(next) => {
+                  // `custom` is never committed by the rows — it opens the
+                  // builder instead, so there is nothing to write.
+                  const write = pipeFrequencyToConfig(
+                    next,
+                    selectedPipe.config.schedule_config ?? null,
+                  );
+                  if (!write) return;
+                  setPipes((prev) =>
+                    prev.map((p) =>
+                      p.config.name === name
+                        ? {
+                            ...p,
+                            is_bundled_builtin: false,
+                            config: {
+                              ...p.config,
+                              schedule_config: write.schedule_config,
+                              // the engine parks the legacy string at "manual"
+                              // whenever a structured config is written
+                              schedule: "manual",
+                              trigger: write.trigger ?? undefined,
+                            },
+                          }
+                        : p,
+                    ),
+                  );
+                  localFetch(`/pipes/${name}/config`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      schedule_config: write.schedule_config,
+                      trigger: write.trigger,
+                    }),
+                  }).then(() => fetchPipes());
+                }}
+                customSummary={
                   enterpriseManaged
                     ? `${pipeScheduleLabel(selectedPipe.config)} · managed`
                     : pipeTriggerSummary(selectedPipe.config)
                 }
-                scheduleSlot={
-                  enterpriseManaged ? (
-                    <p className="font-mono text-[12px] text-muted-foreground">
-                      {pipeScheduleLabel(selectedPipe.config)} · managed by your organization
-                    </p>
-                  ) : (
+                customSlot={
+                  enterpriseManaged ? undefined : (
                     <PipeTriggerPicker
                       pipeName={name}
                       trigger={selectedPipe.config.trigger}

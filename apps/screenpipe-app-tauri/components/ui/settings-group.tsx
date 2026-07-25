@@ -105,7 +105,9 @@ export interface SettingsRowProps {
    *
    * `start` exists for legacy callers only — a row that expands inline ends up
    * hosting a widget with its own heading, which is how the pane grew two
-   * "when to run" labels. Prefer `center` + a disclosure.
+   * "when to run" labels. Prefer `center` and a slim value control that
+   * commits on change; if the editor is too big for a row, put it in a dialog
+   * OVER the pane rather than swapping the labelled row out for it.
    */
   align?: "center" | "start";
   /** makes the whole row a click target (role=button + keyboard) */
@@ -202,10 +204,13 @@ export function SettingsRow({
 }
 
 /**
- * A full-width, un-titled cell inside a group — used when a row's editor is
- * disclosed IN PLACE OF the row. It shares the group's hairline rhythm but
- * carries no label of its own, so the disclosed widget is free to be the only
- * thing naming the setting.
+ * A full-width, un-titled cell inside a group.
+ *
+ * Kept for callers that genuinely have nothing to label, NOT as a disclosure
+ * target: swapping a labelled row out for one of these is what left the pipes
+ * pane showing an unlabelled control next to a labelled one. If an editor is
+ * too big for a row's value, open it in a dialog over the surface and leave
+ * the row — and its label — where it is.
  */
 export function SettingsCell({
   children,

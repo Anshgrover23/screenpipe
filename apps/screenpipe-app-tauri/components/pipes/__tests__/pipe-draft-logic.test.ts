@@ -198,6 +198,31 @@ describe("buildPipeDraftMd", () => {
       "preset:",
     );
   });
+
+  // The draft's frequency rows offer the event presets too, so `create` has to
+  // be able to render them — otherwise create and edit would mean different
+  // things for the same visible selection.
+  it("renders the meeting trigger the draft's frequency rows can pick", () => {
+    const md = buildPipeDraftMd(
+      { ...draft, schedule: "manual", trigger: { events: ["meeting_ended"] } },
+      { enabled: true },
+    );
+    expect(md).toContain("trigger:\n  events:\n    - meeting_ended");
+  });
+
+  it("renders the new-message trigger", () => {
+    const md = buildPipeDraftMd(
+      { ...draft, schedule: "manual", trigger: { sources: [{ app: "slack", kind: "message" }] } },
+      { enabled: true },
+    );
+    expect(md).toContain("trigger:\n  sources:\n    - app: slack\n      kind: message");
+  });
+
+  it("writes no trigger block for a clock-only draft", () => {
+    expect(buildPipeDraftMd({ ...draft, trigger: null }, { enabled: true })).not.toContain(
+      "trigger:",
+    );
+  });
 });
 
 describe("writePipeDraft", () => {

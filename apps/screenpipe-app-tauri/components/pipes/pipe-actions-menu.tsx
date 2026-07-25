@@ -25,19 +25,13 @@ import { cn } from "@/lib/utils";
 
 export interface PipeActionsMenuProps {
   pipeName: string;
-  /** @deprecated pause/resume left this menu — kept so callers still typecheck. */
-  enabled?: boolean;
   isRunning: boolean;
   stopping?: boolean;
   /** Team-shared / enterprise-managed pipes cannot be edited or deleted. */
   readOnly?: boolean;
   canDelete?: boolean;
-  /** @deprecated pause/resume left this menu — kept so callers still typecheck. */
-  canToggle?: boolean;
   onRunNow: () => void;
   onStop: () => void;
-  /** @deprecated pause/resume left this menu — kept so callers still typecheck. */
-  onToggleEnabled?: (enabled: boolean) => void;
   onFork: () => void;
   onOptimize: () => void;
   onDelete: () => void;

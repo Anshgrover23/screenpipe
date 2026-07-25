@@ -18,7 +18,10 @@ import {
   PipeDraftPanel,
   type PipeDraftPanelProps,
 } from "@/components/pipes/pipe-detail-panel";
-import { pipeDraftRequirements } from "@/components/pipes/pipes-page-logic";
+import {
+  pipeDraftRequirements,
+  PIPE_FREQUENCY_DEFAULT,
+} from "@/components/pipes/pipes-page-logic";
 
 afterEach(() => cleanup());
 
@@ -35,8 +38,8 @@ function renderDraft(overrides: Partial<PipeDraftPanelProps> = {}) {
     presetSlot: <button>screenpipe cloud</button>,
     connectionsSlot: <span>none</span>,
     connectionsAddSlot: <button>add</button>,
-    schedule: "every 1h",
-    onScheduleChange: vi.fn(),
+    frequency: { ...PIPE_FREQUENCY_DEFAULT },
+    onFrequencyChange: vi.fn(),
     notificationsEnabled: true,
     onNotificationsChange: vi.fn(),
     requirements: pipeDraftRequirements({ name: "", prompt: "", presetId: null }),
@@ -139,23 +142,35 @@ describe("PipeDraftPanel — prompt", () => {
 });
 
 describe("PipeDraftPanel — defaults that ship visible", () => {
-  it("shows a concrete schedule with an edit affordance, named exactly once", () => {
+  it("ships the SAME frequency rows the saved pane does, defaulting to hourly", () => {
     renderDraft();
-    const row = screen.getByTestId("pipe-draft-schedule-row");
-    expect(row.textContent).toContain("when to run");
-    const summary = screen.getByTestId("pipe-draft-schedule-summary");
-    expect(summary.textContent).toContain("every 1h");
-    expect(summary.textContent).toContain("edit");
-    expect(summary.textContent).not.toContain("manual");
+    const repeat = screen.getByTestId("pipe-draft-repeat");
+    expect(repeat.textContent).toContain("hourly");
+    expect(screen.getByTestId("pipe-draft-at").textContent).toContain("on the hour");
+    expect(screen.getByLabelText("repeat")).toBe(repeat);
+    // no disclosure, and nothing to press to make it stick
+    expect(screen.queryByTestId("pipe-draft-schedule-row")).toBeNull();
+    expect(screen.queryByTestId("pipe-draft-schedule-done")).toBeNull();
   });
 
-  it("discloses the schedule editor in place of the row", () => {
+  it("commits a repeat change on select", () => {
+    const onFrequencyChange = vi.fn();
+    renderDraft({ onFrequencyChange });
+    fireEvent.keyDown(screen.getByTestId("pipe-draft-repeat"), { key: "Enter" });
+    fireEvent.click(screen.getAllByRole("option").find((o) => o.textContent === "weekly")!);
+    expect(onFrequencyChange.mock.calls[0][0]).toMatchObject({ repeat: "weekly" });
+  });
+
+  // A draft has no pipe on disk, so there is nothing for the builder to talk
+  // to — every other preset is offered.
+  it("offers every preset except `custom…`", () => {
     renderDraft();
-    fireEvent.click(screen.getByTestId("pipe-draft-schedule-row"));
-    expect(screen.getByTestId("pipe-draft-schedule-editor")).toBeTruthy();
-    expect(screen.queryByTestId("pipe-draft-schedule-row")).toBeNull();
-    fireEvent.click(screen.getByTestId("pipe-draft-schedule-done"));
-    expect(screen.getByTestId("pipe-draft-schedule-row")).toBeTruthy();
+    fireEvent.keyDown(screen.getByTestId("pipe-draft-repeat"), { key: "Enter" });
+    const labels = screen.getAllByRole("option").map((o) => o.textContent);
+    expect(labels).toContain("after a meeting");
+    expect(labels).toContain("on a new message");
+    expect(labels).toContain("manual only");
+    expect(labels).not.toContain("custom…");
   });
 
   it("defaults notifications to all runs", () => {

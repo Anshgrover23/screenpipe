@@ -21,13 +21,18 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   SETTINGS_LABEL_CLASS,
   SETTINGS_SELECT_TRIGGER_CLASS,
-  SettingsCell,
   SettingsGroup,
   SettingsRow,
   SettingsRowAction,
@@ -41,8 +46,16 @@ import {
   formatClock,
   formatElapsedClock,
   formatRunRow,
+  pipeHourlyMinuteOptions,
+  pipeRepeatHasAt,
+  pipeRepeatHasOn,
+  pipeTimeOfDayOptions,
+  PIPE_REPEAT_OPTIONS,
+  PIPE_WEEKDAY_OPTIONS,
   type PipeDraftRequirement,
   type PipeDraftRequirementKey,
+  type PipeFrequencyValue,
+  type PipeRepeat,
 } from "./pipes-page-logic";
 
 export interface PanelExecution {
@@ -100,7 +113,9 @@ export interface PipeDetailPanelProps {
   // group footer any more: a strip of affordances hanging under the box
   // belonged to no row and put two controls in two visual languages side by
   // side. A row still never hosts a widget that titles itself — that is what
-  // produced two "when to run" headings in the same pane.
+  // produced two "when to run" headings in the same pane — and a row is never
+  // swapped out for its own editor either, which is what made the label vanish
+  // the moment you pressed `edit`. Big editors go in a dialog over the pane.
   /** compact preset control — lives in the `ai preset` row's value column */
   presetSlot: React.ReactNode;
   /**
@@ -108,19 +123,21 @@ export interface PipeDetailPanelProps {
    * it is a failover knob most users never touch.
    */
   fallbackPresetSlot?: React.ReactNode;
-  /** connection chips — the row's value column */
+  /** connection chips — the row's value column. `null` when there are none:
+   *  the row then reads as a bare `add ⌄`, with no dangling separator. */
   connectionsSlot: React.ReactNode;
   /**
    * The `add ⌄` affordance, rendered INSIDE the connections row's value next
    * to the chips, drawn like every other value.
    */
   connectionsAddSlot?: React.ReactNode;
-  /** one-line summary of the current triggers, e.g. `every 1h` */
-  scheduleSummary: React.ReactNode;
-  /** the trigger/schedule builder, disclosed IN PLACE OF the `when to run` row */
-  scheduleSlot: React.ReactNode;
-
-  // frequency group
+  // frequency group — three persistent, labelled rows (see PipeFrequencyRows)
+  frequency: PipeFrequencyValue;
+  onFrequencyChange: (next: PipeFrequencyValue) => void;
+  /** one-line summary shown on the `custom` row, e.g. `every 1h · 2 triggers` */
+  customSummary?: React.ReactNode;
+  /** the trigger/schedule builder — opened in a dialog OVER the pane */
+  customSlot?: React.ReactNode;
   notificationsEnabled: boolean;
   onNotificationsChange: (enabled: boolean) => void;
 
@@ -190,6 +207,275 @@ function GroupLabel({ children, className }: { children: React.ReactNode; classN
 }
 
 /**
+ * The connections row's VALUE — `gmail, notion · add ⌄`, one right-aligned
+ * unit.
+ *
+ * The separator is tied to the chips, not drawn unconditionally: an empty row
+ * used to read `none ·` floating mid-row with `add ⌄` shoved to the far edge,
+ * which made the value look like two unrelated things and left the dot
+ * dangling. Empty now says nothing at all — the absence of chips IS the
+ * message — so the value is just `add ⌄`.
+ *
+ * `chips == null` (not an empty fragment) is how a caller says "no
+ * connections"; a fragment always counts as one child and cannot be measured.
+ */
+function ConnectionsValue({
+  testId,
+  chips,
+  add,
+}: {
+  testId: string;
+  chips: React.ReactNode;
+  add?: React.ReactNode;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      className="flex min-w-0 flex-wrap items-center justify-end gap-2"
+    >
+      {chips}
+      {chips != null && add != null && (
+        <span aria-hidden className="text-[12px] text-muted-foreground/50">
+          ·
+        </span>
+      )}
+      {add}
+    </div>
+  );
+}
+
+// Static option lists — 96 quarter-hours never change, so they are built once
+// rather than on every keystroke in the prompt above them.
+const TIME_OF_DAY_OPTIONS = pipeTimeOfDayOptions();
+const HOURLY_MINUTE_OPTIONS = pipeHourlyMinuteOptions();
+
+/** Slim in-row `<Select>` that commits the moment a value is picked. */
+function FrequencySelect({
+  id,
+  testId,
+  value,
+  onValueChange,
+  children,
+}: {
+  id: string;
+  testId: string;
+  value: string;
+  onValueChange: (value: string) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Select value={value} onValueChange={onValueChange}>
+      <SelectTrigger id={id} data-testid={testId} className={SETTINGS_SELECT_TRIGGER_CLASS}>
+        <SelectValue />
+      </SelectTrigger>
+      {/* Radix scrolls the checked item into view on open, so a 3pm pipe opens
+          at 3pm rather than at midnight. */}
+      <SelectContent className="max-h-[300px] rounded-none">{children}</SelectContent>
+    </Select>
+  );
+}
+
+export interface PipeFrequencyRowsProps {
+  /** `pipe-detail` or `pipe-draft` — prefixes every id and testid */
+  idPrefix: string;
+  value: PipeFrequencyValue;
+  onChange: (next: PipeFrequencyValue) => void;
+  /** read-only one-liner for the `custom` row's value */
+  customSummary?: React.ReactNode;
+  /**
+   * The full trigger/schedule builder. Rendered in a DIALOG over the pane —
+   * never in place of a row. When absent (a draft has no pipe on disk for the
+   * builder to talk to) `custom…` is not offered at all.
+   */
+  customSlot?: React.ReactNode;
+  /** enterprise-managed pipes show what they do and change nothing */
+  readOnly?: boolean;
+  readOnlyNote?: React.ReactNode;
+  notificationsEnabled: boolean;
+  onNotificationsChange: (enabled: boolean) => void;
+}
+
+/**
+ * The `frequency` group: `repeat` · `on` · `at` · `notifications`.
+ *
+ * There is no disclosure and no `done` button. Every row is permanently
+ * labelled and commits on select — the old design swapped the labelled
+ * `when to run` row out for the self-titling builder, which is why pressing
+ * `edit` left an unlabelled control sitting next to a labelled one. The only
+ * thing that still opens the builder is `custom…`, and it opens OVER the pane
+ * so the `custom` row keeps its label the whole time.
+ */
+export function PipeFrequencyRows({
+  idPrefix,
+  value,
+  onChange,
+  customSummary,
+  customSlot,
+  readOnly = false,
+  readOnlyNote,
+  notificationsEnabled,
+  onNotificationsChange,
+}: PipeFrequencyRowsProps) {
+  const [customOpen, setCustomOpen] = React.useState(false);
+
+  const repeatOptions = customSlot
+    ? PIPE_REPEAT_OPTIONS
+    : PIPE_REPEAT_OPTIONS.filter((option) => option.value !== "custom");
+
+  // `custom…` writes nothing: it opens the builder and lets whatever the
+  // builder saves decide what the rows read back as. Committing "custom" as a
+  // value would mean wiping a perfectly good schedule just to cancel out of a
+  // dialog.
+  const handleRepeat = (next: string) => {
+    if (next === "custom") {
+      setCustomOpen(true);
+      return;
+    }
+    onChange({ ...value, repeat: next as PipeRepeat });
+  };
+
+  return (
+    <SettingsGroup label="frequency">
+      {readOnly ? (
+        <SettingsRow label="repeat" testId={`${idPrefix}-repeat-row`}>
+          <span
+            data-testid={`${idPrefix}-repeat-readonly`}
+            className="font-mono text-[12px] text-muted-foreground"
+          >
+            {readOnlyNote}
+          </span>
+        </SettingsRow>
+      ) : (
+        <>
+          <SettingsRow
+            label="repeat"
+            htmlFor={`${idPrefix}-repeat`}
+            testId={`${idPrefix}-repeat-row`}
+          >
+            <FrequencySelect
+              id={`${idPrefix}-repeat`}
+              testId={`${idPrefix}-repeat`}
+              value={value.repeat}
+              onValueChange={handleRepeat}
+            >
+              {repeatOptions.map((option) => (
+                <React.Fragment key={option.value}>
+                  {option.separatorBefore && <SelectSeparator />}
+                  <SelectItem value={option.value}>{option.label}</SelectItem>
+                </React.Fragment>
+              ))}
+            </FrequencySelect>
+          </SettingsRow>
+
+          {pipeRepeatHasOn(value.repeat) && (
+            <SettingsRow label="on" htmlFor={`${idPrefix}-on`} testId={`${idPrefix}-on-row`}>
+              <FrequencySelect
+                id={`${idPrefix}-on`}
+                testId={`${idPrefix}-on`}
+                value={String(value.weekday)}
+                onValueChange={(next) => onChange({ ...value, weekday: Number(next) })}
+              >
+                {PIPE_WEEKDAY_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </FrequencySelect>
+            </SettingsRow>
+          )}
+
+          {pipeRepeatHasAt(value.repeat) && (
+            <SettingsRow label="at" htmlFor={`${idPrefix}-at`} testId={`${idPrefix}-at-row`}>
+              {value.repeat === "hourly" ? (
+                <FrequencySelect
+                  id={`${idPrefix}-at`}
+                  testId={`${idPrefix}-at`}
+                  value={String(value.minute)}
+                  onValueChange={(next) => onChange({ ...value, minute: Number(next) })}
+                >
+                  {HOURLY_MINUTE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </FrequencySelect>
+              ) : (
+                <FrequencySelect
+                  id={`${idPrefix}-at`}
+                  testId={`${idPrefix}-at`}
+                  value={String(value.timeOfDay)}
+                  onValueChange={(next) => onChange({ ...value, timeOfDay: Number(next) })}
+                >
+                  {TIME_OF_DAY_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </FrequencySelect>
+              )}
+            </SettingsRow>
+          )}
+
+          {/* Whatever the builder produced, summarised. The label stays put —
+              that is the whole fix — and `edit` re-opens the same dialog. */}
+          {value.repeat === "custom" && (
+            <SettingsRow label="custom" testId={`${idPrefix}-custom-row`}>
+              <SettingsRowAction>
+                <span className="truncate">{customSummary}</span>
+                <button
+                  type="button"
+                  data-testid={`${idPrefix}-custom-edit`}
+                  className="underline underline-offset-2 transition-colors duration-150 hover:text-foreground"
+                  onClick={() => setCustomOpen(true)}
+                >
+                  edit
+                </button>
+              </SettingsRowAction>
+            </SettingsRow>
+          )}
+        </>
+      )}
+
+      <SettingsRow label="notifications" htmlFor={`${idPrefix}-notifications`}>
+        <Select
+          value={notificationsEnabled ? "all" : "off"}
+          onValueChange={(next) => onNotificationsChange(next === "all")}
+        >
+          <SelectTrigger
+            id={`${idPrefix}-notifications`}
+            data-testid={`${idPrefix}-notifications`}
+            className={SETTINGS_SELECT_TRIGGER_CLASS}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="rounded-none">
+            <SelectItem value="all">all runs</SelectItem>
+            <SelectItem value="off">off</SelectItem>
+          </SelectContent>
+        </Select>
+      </SettingsRow>
+
+      {customSlot != null && (
+        <Dialog open={customOpen} onOpenChange={setCustomOpen}>
+          <DialogContent
+            data-testid={`${idPrefix}-custom-dialog`}
+            // the builder describes itself; opt out of Radix's description
+            aria-describedby={undefined}
+            className="max-w-lg gap-0 rounded-none p-5"
+          >
+            {/* the builder titles itself; this is the accessible name only,
+                and deliberately NOT "when to run" — it would be a second
+                element naming a setting the builder already names. */}
+            <DialogTitle className="sr-only">custom frequency</DialogTitle>
+            {customSlot}
+          </DialogContent>
+        </Dialog>
+      )}
+    </SettingsGroup>
+  );
+}
+
+/**
  * Right-side detail panel for one pipe — replaces the old accordion.
  * Everything the CONFIG / RUNS / ADVANCED tabs used to hold is re-homed here:
  * prompt, chat, preset, connections, schedule, notifications, advanced
@@ -215,8 +501,10 @@ export function PipeDetailPanel(props: PipeDetailPanelProps) {
     fallbackPresetSlot,
     connectionsSlot,
     connectionsAddSlot,
-    scheduleSummary,
-    scheduleSlot,
+    frequency,
+    onFrequencyChange,
+    customSummary,
+    customSlot,
     notificationsEnabled,
     onNotificationsChange,
     timeoutSeconds,
@@ -245,9 +533,6 @@ export function PipeDetailPanel(props: PipeDetailPanelProps) {
 
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
   const [logsOpen, setLogsOpen] = React.useState(false);
-  // The schedule builder is disclosed IN PLACE OF the `when to run` row, so
-  // exactly one element ever names the setting.
-  const [scheduleOpen, setScheduleOpen] = React.useState(false);
   const [now, setNow] = React.useState(() => Date.now());
   useInterval(() => setNow(Date.now()), isRunning ? 1000 : null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -562,73 +847,26 @@ export function PipeDetailPanel(props: PipeDetailPanelProps) {
             </div>
           </SettingsRow>
           <SettingsRow label="connections" testId="pipe-detail-connections-row">
-            <div
-              data-testid="pipe-detail-connections"
-              className="flex min-w-0 flex-wrap items-center justify-end gap-2"
-            >
-              {connectionsSlot}
-              {connectionsAddSlot != null && (
-                <>
-                  <span aria-hidden className="text-[12px] text-muted-foreground/50">
-                    ·
-                  </span>
-                  {connectionsAddSlot}
-                </>
-              )}
-            </div>
+            <ConnectionsValue
+              testId="pipe-detail-connections"
+              chips={connectionsSlot}
+              add={connectionsAddSlot}
+            />
           </SettingsRow>
         </SettingsGroup>
 
-        {/* frequency */}
-        <SettingsGroup label="frequency">
-          {scheduleOpen ? (
-            // Disclosed in place of the row: the builder titles itself, so the
-            // row's own "when to run" label must not also be on screen.
-            <SettingsCell data-testid="pipe-detail-schedule-builder">
-              {scheduleSlot}
-              <div className="mt-3 flex justify-end">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  data-testid="pipe-detail-schedule-done"
-                  className="h-7 rounded-none px-2 text-[12px]"
-                  onClick={() => setScheduleOpen(false)}
-                >
-                  done
-                </Button>
-              </div>
-            </SettingsCell>
-          ) : (
-            <SettingsRow
-              label="when to run"
-              testId="pipe-detail-schedule-row"
-              onClick={() => setScheduleOpen(true)}
-            >
-              <SettingsRowAction data-testid="pipe-detail-schedule-summary">
-                <span className="truncate">{scheduleSummary}</span>
-                <span className="underline underline-offset-2">edit</span>
-              </SettingsRowAction>
-            </SettingsRow>
-          )}
-          <SettingsRow label="notifications" htmlFor="pipe-detail-notifications">
-            <Select
-              value={notificationsEnabled ? "all" : "off"}
-              onValueChange={(value) => onNotificationsChange(value === "all")}
-            >
-              <SelectTrigger
-                id="pipe-detail-notifications"
-                className={SETTINGS_SELECT_TRIGGER_CLASS}
-                data-testid="pipe-detail-notifications"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="rounded-none">
-                <SelectItem value="all">all runs</SelectItem>
-                <SelectItem value="off">off</SelectItem>
-              </SelectContent>
-            </Select>
-          </SettingsRow>
-        </SettingsGroup>
+        {/* frequency — persistent labelled rows, no disclosure, no done */}
+        <PipeFrequencyRows
+          idPrefix="pipe-detail"
+          value={frequency}
+          onChange={onFrequencyChange}
+          customSummary={customSummary}
+          customSlot={customSlot}
+          readOnly={enterpriseManaged}
+          readOnlyNote={customSummary}
+          notificationsEnabled={notificationsEnabled}
+          onNotificationsChange={onNotificationsChange}
+        />
 
         {/* previous runs — plain rows under a quiet caption, NO container.
             Settings and history are different kinds of content: boxing the log
@@ -762,23 +1000,6 @@ export function PipeDetailPanel(props: PipeDetailPanelProps) {
   );
 }
 
-/**
- * The intervals a draft can pick before it exists. Deliberately short: the
- * full trigger builder needs a pipe on disk to talk to, and a draft that has
- * to choose between 14 recurrence shapes before it can be created is not a
- * quick manual setup. Everything else is one `edit` away once it's saved.
- */
-export const PIPE_DRAFT_SCHEDULES = [
-  "every 15m",
-  "every 30m",
-  "every 1h",
-  "every 2h",
-  "every 6h",
-  "every 12h",
-  "daily",
-  "manual",
-] as const;
-
 export interface PipeDraftPanelProps {
   name: string;
   onNameChange: (value: string) => void;
@@ -800,8 +1021,14 @@ export interface PipeDraftPanelProps {
   connectionsSlot: React.ReactNode;
   connectionsAddSlot?: React.ReactNode;
 
-  schedule: string;
-  onScheduleChange: (schedule: string) => void;
+  /**
+   * The SAME frequency rows the saved pane shows, so create and edit are not
+   * two different settings surfaces. `custom…` is the one thing missing: the
+   * full builder needs a pipe on disk to talk to, and it is one row away the
+   * moment the draft is created.
+   */
+  frequency: PipeFrequencyValue;
+  onFrequencyChange: (next: PipeFrequencyValue) => void;
   notificationsEnabled: boolean;
   onNotificationsChange: (enabled: boolean) => void;
 
@@ -836,8 +1063,8 @@ export function PipeDraftPanel({
   presetSlot,
   connectionsSlot,
   connectionsAddSlot,
-  schedule,
-  onScheduleChange,
+  frequency,
+  onFrequencyChange,
   notificationsEnabled,
   onNotificationsChange,
   requirements,
@@ -846,7 +1073,6 @@ export function PipeDraftPanel({
   onCreate,
   onCancel,
 }: PipeDraftPanelProps) {
-  const [scheduleOpen, setScheduleOpen] = React.useState(false);
   const [showRequirements, setShowRequirements] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const scrollFade = useScrollFade(scrollRef);
@@ -986,88 +1212,22 @@ export function PipeDraftPanel({
             </div>
           </SettingsRow>
           <SettingsRow label="connections" testId="pipe-draft-connections-row">
-            <div
-              data-testid="pipe-draft-connections"
-              className="flex min-w-0 flex-wrap items-center justify-end gap-2"
-            >
-              {connectionsSlot}
-              {connectionsAddSlot != null && (
-                <>
-                  <span aria-hidden className="text-[12px] text-muted-foreground/50">
-                    ·
-                  </span>
-                  {connectionsAddSlot}
-                </>
-              )}
-            </div>
+            <ConnectionsValue
+              testId="pipe-draft-connections"
+              chips={connectionsSlot}
+              add={connectionsAddSlot}
+            />
           </SettingsRow>
         </SettingsGroup>
 
-        <SettingsGroup label="frequency">
-          {scheduleOpen ? (
-            <SettingsCell data-testid="pipe-draft-schedule-editor">
-              <div className="flex items-center justify-between gap-3">
-                <Select
-                  value={schedule}
-                  onValueChange={(value) => onScheduleChange(value)}
-                >
-                  <SelectTrigger
-                    data-testid="pipe-draft-schedule-select"
-                    aria-label="when to run"
-                    className={SETTINGS_SELECT_TRIGGER_CLASS}
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="rounded-none">
-                    {PIPE_DRAFT_SCHEDULES.map((option) => (
-                      <SelectItem key={option} value={option}>
-                        {option}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  data-testid="pipe-draft-schedule-done"
-                  className="h-7 rounded-none px-2 text-[12px]"
-                  onClick={() => setScheduleOpen(false)}
-                >
-                  done
-                </Button>
-              </div>
-            </SettingsCell>
-          ) : (
-            <SettingsRow
-              label="when to run"
-              testId="pipe-draft-schedule-row"
-              onClick={() => setScheduleOpen(true)}
-            >
-              <SettingsRowAction data-testid="pipe-draft-schedule-summary">
-                <span className="truncate">{schedule}</span>
-                <span className="underline underline-offset-2">edit</span>
-              </SettingsRowAction>
-            </SettingsRow>
-          )}
-          <SettingsRow label="notifications" htmlFor="pipe-draft-notifications">
-            <Select
-              value={notificationsEnabled ? "all" : "off"}
-              onValueChange={(value) => onNotificationsChange(value === "all")}
-            >
-              <SelectTrigger
-                id="pipe-draft-notifications"
-                data-testid="pipe-draft-notifications"
-                className={SETTINGS_SELECT_TRIGGER_CLASS}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="rounded-none">
-                <SelectItem value="all">all runs</SelectItem>
-                <SelectItem value="off">off</SelectItem>
-              </SelectContent>
-            </Select>
-          </SettingsRow>
-        </SettingsGroup>
+        {/* identical to the saved pane, minus `custom…` */}
+        <PipeFrequencyRows
+          idPrefix="pipe-draft"
+          value={frequency}
+          onChange={onFrequencyChange}
+          notificationsEnabled={notificationsEnabled}
+          onNotificationsChange={onNotificationsChange}
+        />
       </div>
 
       {/* Pinned footer — the two things you can do with a draft never scroll

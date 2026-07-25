@@ -39,9 +39,15 @@ import { saveScreenshot } from '../helpers/screenshot-utils.js';
  *                           "pipe-menu-select" — NO pause/resume item, by design
  *   selection mode       →  data-testid="pipes-selection-bar" / "pipes-selection-exit"
  *   pipe-detail-panel    →  data-testid="pipe-detail-panel" / "pipe-detail-prompt" / "pipe-detail-runs" /
- *                           "pipe-detail-schedule-row" / "pipe-detail-schedule-summary" /
- *                           "pipe-detail-schedule-builder" / "pipe-detail-schedule-done" /
+ *                           "pipe-detail-repeat" / "pipe-detail-on" / "pipe-detail-at" /
+ *                           "pipe-detail-custom-row" / "pipe-detail-custom-edit" /
+ *                           "pipe-detail-notifications" /
  *                           "pipe-detail-preset-row" / "pipe-detail-connections-row"
+ *
+ * Frequency is THREE persistent labelled rows (`repeat` · `on` · `at`) plus
+ * `notifications`. There is no `when to run` row, no disclosure and no `done`
+ * button any more — every row commits on select, and the full builder opens in
+ * a dialog OVER the pane via `custom…`.
  *
  * In split mode the header is compact: `pipes-subtitle` and `pipes-community-btn`
  * are NOT rendered, and the filter tabs carry no counts. The notification bell
@@ -715,9 +721,24 @@ describe('Pipes page: header, filters, detail panel, run now', function () {
     await $('[data-testid="pipe-detail-close"]').click();
   });
 
-  // ─── Detail pane: no duplicated labels ────────────────────────────────────
+  // ─── Detail pane: frequency is persistent, labelled rows ──────────────────
 
-  it('names "when to run" exactly once — the row titles it, the widget does not', async function () {
+  /** Count elements inside the pane whose OWN text is exactly `text`. */
+  async function paneLabelCount(text: string): Promise<number> {
+    return browser.execute((needle: string) => {
+      const pane = document.querySelector('[data-testid="pipe-detail-panel"]');
+      if (!pane) return -1;
+      return Array.from(pane.querySelectorAll('*')).filter((el) =>
+        Array.from(el.childNodes).some(
+          (n) =>
+            n.nodeType === Node.TEXT_NODE &&
+            (n.textContent || '').trim().toLowerCase() === needle,
+        ),
+      ).length;
+    }, text);
+  }
+
+  it('shows repeat + notifications as permanently labelled rows', async function () {
     if (!fixtureInstalled) this.skip();
     await openPipesPage();
     await waitForFixtureRow();
@@ -725,50 +746,26 @@ describe('Pipes page: header, filters, detail panel, run now', function () {
     await $(`[data-testid="pipe-row-${PIPE_NAME}"]`).click();
     await $('[data-testid="pipe-detail-panel"]').waitForExist({ timeout: t(10_000) });
 
-    // Regression: the `when to run` SettingsRow was labelled, and the trigger
-    // picker nested inside it rendered its OWN "when to run" heading plus the
-    // "on a schedule, after a meeting…" description — two labels, one control.
-    const naming = await browser.execute(() => {
-      const pane = document.querySelector('[data-testid="pipe-detail-panel"]');
-      if (!pane) return -1;
-      return Array.from(pane.querySelectorAll('*')).filter((el) =>
-        Array.from(el.childNodes).some(
-          (n) =>
-            n.nodeType === Node.TEXT_NODE &&
-            (n.textContent || '').trim().toLowerCase() === 'when to run',
-        ),
-      ).length;
-    });
-    expect(naming).toBe(1);
+    expect(await $('[data-testid="pipe-detail-repeat"]').isExisting()).toBe(true);
+    expect(await $('[data-testid="pipe-detail-notifications"]').isExisting()).toBe(true);
+    expect(await paneLabelCount('repeat')).toBe(1);
+    expect(await paneLabelCount('notifications')).toBe(1);
 
-    // The row is a summary + edit affordance; the builder is disclosed, not nested.
-    const summary = await $('[data-testid="pipe-detail-schedule-summary"]');
-    expect(await summary.isExisting()).toBe(true);
-    expect((await summary.getText()).toLowerCase()).toContain('edit');
-    expect(await $('[data-testid="pipe-detail-schedule-builder"]').isExisting()).toBe(false);
+    // The disclosure that hid the label on `edit` is gone entirely.
+    expect(await paneLabelCount('when to run')).toBe(0);
+    expect(await $('[data-testid="pipe-detail-schedule-row"]').isExisting()).toBe(false);
 
     // Same bug, second instance: the `ai preset` row hosted a widget captioned
     // "primary ai preset".
-    const presetNaming = await browser.execute(() => {
-      const pane = document.querySelector('[data-testid="pipe-detail-panel"]');
-      if (!pane) return -1;
-      return Array.from(pane.querySelectorAll('*')).filter((el) =>
-        Array.from(el.childNodes).some(
-          (n) =>
-            n.nodeType === Node.TEXT_NODE &&
-            (n.textContent || '').trim().toLowerCase() === 'primary ai preset',
-        ),
-      ).length;
-    });
-    expect(presetNaming).toBe(0);
+    expect(await paneLabelCount('primary ai preset')).toBe(0);
 
-    const filepath = await saveScreenshot('pipes-detail-single-when-to-run');
+    const filepath = await saveScreenshot('pipes-detail-frequency-rows');
     expect(existsSync(filepath)).toBe(true);
 
     await $('[data-testid="pipe-detail-close"]').click();
   });
 
-  it('discloses the schedule builder only when the row is activated', async function () {
+  it('reveals the `at` row when repeat is changed to daily, with no done button', async function () {
     if (!fixtureInstalled) this.skip();
     await openPipesPage();
     await waitForFixtureRow();
@@ -776,31 +773,23 @@ describe('Pipes page: header, filters, detail panel, run now', function () {
     await $(`[data-testid="pipe-row-${PIPE_NAME}"]`).click();
     await $('[data-testid="pipe-detail-panel"]').waitForExist({ timeout: t(10_000) });
 
-    const row = await $('[data-testid="pipe-detail-schedule-row"]');
-    await row.click();
+    await $('[data-testid="pipe-detail-repeat"]').click();
+    const daily = await $('//div[@role="option"][normalize-space(.)="daily"]');
+    await daily.waitForExist({ timeout: t(5_000) });
+    await daily.click();
 
-    const builder = await $('[data-testid="pipe-detail-schedule-builder"]');
-    await builder.waitForExist({ timeout: t(5_000) });
-    // Still only one "when to run" — the builder replaces the row, it does not
-    // stack under it.
-    const naming = await browser.execute(() => {
-      const pane = document.querySelector('[data-testid="pipe-detail-panel"]');
-      if (!pane) return -1;
-      return Array.from(pane.querySelectorAll('*')).filter((el) =>
-        Array.from(el.childNodes).some(
-          (n) =>
-            n.nodeType === Node.TEXT_NODE &&
-            (n.textContent || '').trim().toLowerCase() === 'when to run',
-        ),
-      ).length;
-    });
-    expect(naming).toBe(1);
+    const at = await $('[data-testid="pipe-detail-at"]');
+    await at.waitForExist({ timeout: t(5_000) });
+    expect(await paneLabelCount('at')).toBe(1);
+    // `on` is weekly-only, so daily must not grow one
+    expect(await $('[data-testid="pipe-detail-on"]').isExisting()).toBe(false);
 
-    await $('[data-testid="pipe-detail-schedule-done"]').click();
-    await browser.waitUntil(
-      async () => !(await $('[data-testid="pipe-detail-schedule-builder"]').isExisting()),
-      { timeout: t(5_000), timeoutMsg: 'schedule builder did not collapse' },
-    );
+    // Selecting committed it — there is nothing left to press.
+    expect(await paneLabelCount('done')).toBe(0);
+    expect(await $('[data-testid="pipe-detail-schedule-done"]').isExisting()).toBe(false);
+
+    const filepath = await saveScreenshot('pipes-detail-frequency-daily');
+    expect(existsSync(filepath)).toBe(true);
 
     await $('[data-testid="pipe-detail-close"]').click();
   });

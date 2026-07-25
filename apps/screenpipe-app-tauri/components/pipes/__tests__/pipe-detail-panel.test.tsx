@@ -9,15 +9,16 @@ import {
   PipeDetailPanel,
   type PipeDetailPanelProps,
 } from "@/components/pipes/pipe-detail-panel";
+import { PIPE_FREQUENCY_DEFAULT } from "@/components/pipes/pipes-page-logic";
 
 afterEach(() => cleanup());
 
 /**
  * The pane's regression surface, in one place:
  *   - no "PROMPT" caption above the prompt block
- *   - exactly ONE element naming "when to run" (the bug: the row was titled
- *     AND the widget inside it titled itself)
- *   - the schedule builder is disclosed, not nested
+ *   - frequency is THREE persistent labelled rows, never a disclosure
+ *   - the builder opens in a dialog OVER the pane, so the `custom` row keeps
+ *     its label (the reported bug: `edit` swapped the labelled row out)
  *   - advanced is the LAST section
  */
 function renderPanel(overrides: Partial<PipeDetailPanelProps> = {}) {
@@ -35,9 +36,11 @@ function renderPanel(overrides: Partial<PipeDetailPanelProps> = {}) {
     fallbackPresetSlot: <button>fallback picker</button>,
     connectionsSlot: <span>slack</span>,
     connectionsAddSlot: <button>add</button>,
-    scheduleSummary: "every 1h",
-    // Stands in for `PipeTriggerPicker`, which titles itself the same way.
-    scheduleSlot: (
+    frequency: { ...PIPE_FREQUENCY_DEFAULT },
+    onFrequencyChange: vi.fn(),
+    customSummary: "*/5 8-23 * * *",
+    // Stands in for `PipeTriggerPicker`, which titles itself.
+    customSlot: (
       <div>
         <div>when to run</div>
         <button>add trigger</button>
@@ -115,7 +118,6 @@ describe("PipeDetailPanel — no React key warnings", () => {
         ],
       });
       fireEvent.click(screen.getByTestId("pipe-detail-advanced-toggle"));
-      fireEvent.click(screen.getByTestId("pipe-detail-schedule-row"));
 
       const messages = spy.mock.calls.map((call) => String(call[0]));
       expect(messages.filter((m) => /unique "?key"?|same key/i.test(m))).toEqual([]);
@@ -145,47 +147,158 @@ describe("PipeDetailPanel — prompt", () => {
   });
 });
 
-describe("PipeDetailPanel — when to run", () => {
-  it("names the setting exactly once (regression: the row and the widget both did)", () => {
+/** the visible text of the row that labels `text`, or null */
+function rowLabelled(text: string): Element | null {
+  return (
+    Array.from(document.querySelectorAll('[data-testid$="-row"], [data-testid]')).find(
+      (el) =>
+        el.getAttribute("data-testid")?.startsWith("pipe-detail-") &&
+        Array.from(el.querySelectorAll("label, span")).some(
+          (child) => (child.textContent ?? "").trim() === text,
+        ),
+    ) ?? null
+  );
+}
+
+describe("PipeDetailPanel — frequency rows", () => {
+  it("renders repeat + at + notifications, every one of them labelled", () => {
     renderPanel();
-    expect(elementsNaming("when to run")).toHaveLength(1);
+
+    expect(screen.getByTestId("pipe-detail-repeat")).toBeTruthy();
+    expect(screen.getByTestId("pipe-detail-at")).toBeTruthy();
+    expect(screen.getByTestId("pipe-detail-notifications")).toBeTruthy();
+
+    expect(elementsNaming("repeat")).toHaveLength(1);
+    expect(elementsNaming("at")).toHaveLength(1);
+    expect(elementsNaming("notifications")).toHaveLength(1);
+
+    // the old disclosure is gone entirely
+    expect(elementsNaming("when to run")).toHaveLength(0);
+    expect(screen.queryByTestId("pipe-detail-schedule-row")).toBeNull();
+    expect(screen.queryByTestId("pipe-detail-schedule-builder")).toBeNull();
   });
 
-  it("shows the current schedule as the row's value plus an edit affordance", () => {
-    renderPanel({ scheduleSummary: "every 1h" });
+  it("has NO done button anywhere in the frequency group", () => {
+    renderPanel();
+    expect(screen.queryByTestId("pipe-detail-schedule-done")).toBeNull();
+    expect(elementsNaming("done")).toHaveLength(0);
+  });
 
-    const row = screen.getByTestId("pipe-detail-schedule-row");
-    expect(row.textContent).toContain("when to run");
-    const summary = screen.getByTestId("pipe-detail-schedule-summary");
-    expect(summary.textContent).toContain("every 1h");
-    expect(summary.textContent).toContain("edit");
+  it("associates every frequency select with its label", () => {
+    renderPanel({ frequency: { ...PIPE_FREQUENCY_DEFAULT, repeat: "weekly" } });
+    expect(screen.getByLabelText("repeat")).toBe(screen.getByTestId("pipe-detail-repeat"));
+    expect(screen.getByLabelText("on")).toBe(screen.getByTestId("pipe-detail-on"));
+    expect(screen.getByLabelText("at")).toBe(screen.getByTestId("pipe-detail-at"));
+  });
 
-    // the builder is NOT mounted until asked for
-    expect(screen.queryByTestId("pipe-detail-schedule-builder")).toBeNull();
+  it("shows `on` only for weekly", () => {
+    renderPanel({ frequency: { ...PIPE_FREQUENCY_DEFAULT, repeat: "daily" } });
+    expect(screen.queryByTestId("pipe-detail-on")).toBeNull();
+    cleanup();
+
+    renderPanel({ frequency: { ...PIPE_FREQUENCY_DEFAULT, repeat: "weekly", weekday: 3 } });
+    expect(screen.getByTestId("pipe-detail-on").textContent).toContain("wednesday");
+  });
+
+  it("drops `at` entirely for the trigger and manual modes", () => {
+    for (const repeat of ["meeting", "message", "manual"] as const) {
+      renderPanel({ frequency: { ...PIPE_FREQUENCY_DEFAULT, repeat } });
+      expect(screen.queryByTestId("pipe-detail-at")).toBeNull();
+      expect(screen.queryByTestId("pipe-detail-on")).toBeNull();
+      // …but notifications stays
+      expect(screen.getByTestId("pipe-detail-notifications")).toBeTruthy();
+      cleanup();
+    }
+  });
+
+  it("shows minute offsets for hourly and clock times otherwise", () => {
+    renderPanel({ frequency: { ...PIPE_FREQUENCY_DEFAULT, repeat: "hourly", minute: 30 } });
+    expect(screen.getByTestId("pipe-detail-at").textContent).toContain(":30");
+    cleanup();
+
+    renderPanel({
+      frequency: { ...PIPE_FREQUENCY_DEFAULT, repeat: "daily", timeOfDay: 9 * 60 + 15 },
+    });
+    expect(screen.getByTestId("pipe-detail-at").textContent).toContain("9:15am");
+  });
+
+  it("commits a repeat change immediately — no done button to press", () => {
+    const onFrequencyChange = vi.fn();
+    renderPanel({ onFrequencyChange });
+
+    // Radix selects are not keyboard-driveable in jsdom; drive the committed
+    // value the way the trigger does.
+    fireEvent.keyDown(screen.getByTestId("pipe-detail-repeat"), { key: "Enter" });
+    const options = screen.getAllByRole("option");
+    fireEvent.click(options.find((o) => o.textContent === "daily")!);
+
+    expect(onFrequencyChange).toHaveBeenCalledTimes(1);
+    expect(onFrequencyChange.mock.calls[0][0]).toMatchObject({ repeat: "daily" });
+  });
+});
+
+describe("PipeDetailPanel — custom opens OVER the pane", () => {
+  const CUSTOM: Partial<PipeDetailPanelProps> = {
+    frequency: { ...PIPE_FREQUENCY_DEFAULT, repeat: "custom" },
+  };
+
+  it("summarises the custom schedule in a row that is still labelled", () => {
+    renderPanel(CUSTOM);
+    const row = screen.getByTestId("pipe-detail-custom-row");
+    expect(row.textContent).toContain("custom");
+    expect(row.textContent).toContain("*/5 8-23 * * *");
+    // the builder is not mounted until asked for
     expect(screen.queryByText("add trigger")).toBeNull();
   });
 
-  it("discloses the builder on activation, in place of the row", () => {
-    renderPanel();
+  /**
+   * THE reported bug, pinned: `edit` used to swap the labelled row out for the
+   * builder, leaving an unlabelled control next to a labelled one.
+   */
+  it("keeps the custom row's label in the document while the builder is open", () => {
+    renderPanel(CUSTOM);
 
-    fireEvent.click(screen.getByTestId("pipe-detail-schedule-row"));
+    fireEvent.click(screen.getByTestId("pipe-detail-custom-edit"));
 
-    expect(screen.getByTestId("pipe-detail-schedule-builder")).toBeTruthy();
+    expect(screen.getByTestId("pipe-detail-custom-dialog")).toBeTruthy();
     expect(screen.getByText("add trigger")).toBeTruthy();
-    // the row stepped aside, so "when to run" is still said exactly once
-    expect(screen.queryByTestId("pipe-detail-schedule-row")).toBeNull();
-    expect(elementsNaming("when to run")).toHaveLength(1);
 
-    // …and it collapses back
-    fireEvent.click(screen.getByTestId("pipe-detail-schedule-done"));
-    expect(screen.queryByTestId("pipe-detail-schedule-builder")).toBeNull();
-    expect(screen.getByTestId("pipe-detail-schedule-row")).toBeTruthy();
+    // the row did NOT step aside
+    const row = screen.getByTestId("pipe-detail-custom-row");
+    expect(row.textContent).toContain("custom");
+    expect(elementsNaming("custom")).toHaveLength(1);
+    // …and the repeat row it sits under is untouched
+    expect(screen.getByTestId("pipe-detail-repeat")).toBeTruthy();
+    expect(elementsNaming("repeat")).toHaveLength(1);
   });
 
-  it("is keyboard operable", () => {
-    renderPanel();
-    fireEvent.keyDown(screen.getByTestId("pipe-detail-schedule-row"), { key: "Enter" });
-    expect(screen.getByTestId("pipe-detail-schedule-builder")).toBeTruthy();
+  it("does not offer `custom…` at all when there is no builder to open", () => {
+    renderPanel({ customSlot: undefined });
+    fireEvent.keyDown(screen.getByTestId("pipe-detail-repeat"), { key: "Enter" });
+    expect(
+      screen.getAllByRole("option").map((o) => o.textContent),
+    ).not.toContain("custom…");
+  });
+
+  it("opens the builder rather than committing `custom` as a value", () => {
+    const onFrequencyChange = vi.fn();
+    renderPanel({ onFrequencyChange });
+
+    fireEvent.keyDown(screen.getByTestId("pipe-detail-repeat"), { key: "Enter" });
+    fireEvent.click(screen.getAllByRole("option").find((o) => o.textContent === "custom…")!);
+
+    expect(onFrequencyChange).not.toHaveBeenCalled();
+    expect(screen.getByTestId("pipe-detail-custom-dialog")).toBeTruthy();
+  });
+
+  it("shows a managed pipe what it does and lets it change nothing", () => {
+    renderPanel({ enterpriseManaged: true, customSummary: "every 1h · managed" });
+    expect(screen.queryByTestId("pipe-detail-repeat")).toBeNull();
+    expect(screen.getByTestId("pipe-detail-repeat-readonly").textContent).toContain(
+      "managed",
+    );
+    // the row is still labelled
+    expect(rowLabelled("repeat")).toBeTruthy();
   });
 });
 
@@ -216,8 +329,21 @@ describe("PipeDetailPanel — details rows own their affordances", () => {
     expect(row.textContent).toContain("slack");
     expect(value.contains(add)).toBe(true);
     expect(row.contains(add)).toBe(true);
-    // …and the value reads as one line: chips · add
-    expect(value.textContent).toContain("·");
+    // …and the value reads as one unit: chips · add
+    expect(value.textContent).toBe("slack·add");
+  });
+
+  // Regression: an empty row read `none ·` floating mid-row with `add ⌄`
+  // shoved to the far edge — a dangling separator and a value that looked like
+  // two things.
+  it("reads as a bare `add` when there are no connections — no `none`, no separator", () => {
+    renderPanel({ connectionsSlot: null });
+    const value = screen.getByTestId("pipe-detail-connections");
+    expect(value.textContent).toBe("add");
+    expect(value.textContent).not.toContain("·");
+    expect(value.textContent).not.toContain("none");
+    // still right-aligned as one unit
+    expect(value.className).toContain("justify-end");
   });
 
   it("re-homes the fallback preset to a row under advanced", () => {
